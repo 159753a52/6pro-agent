@@ -6,44 +6,48 @@
   <title>6Pro 额度复用助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
     /* Custom scrollbars */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: #18181b; }
-    ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #52525b; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
 
-    /* Modern Dark Markdown Typography */
+    /* Codex Desktop Light Mode Typography */
     .markdown-body {
       font-size: 15px;
-      line-height: 1.75;
-      color: #cbd5e1;
+      line-height: 1.8;
+      color: #1f2937;
       letter-spacing: 0.012em;
+      max-width: 880px;
+      margin: 0 auto;
     }
     .markdown-body h1 {
-      font-size: 1.6rem;
+      font-size: 1.55rem;
       font-weight: 700;
-      color: #f8fafc;
+      color: #111827;
       margin-top: 2rem;
       margin-bottom: 1rem;
       padding-bottom: 0.5rem;
-      border-bottom: 1px solid #334155;
+      border-bottom: 1px solid #e5e7eb;
     }
     .markdown-body h2 {
-      font-size: 1.25rem;
+      font-size: 1.22rem;
       font-weight: 700;
-      color: #f1f5f9;
-      margin-top: 2.2rem;
+      color: #111827;
+      margin-top: 2rem;
       margin-bottom: 0.85rem;
       padding-left: 0.85rem;
-      border-left: 4px solid #6366f1;
+      border-left: 4px solid #3b82f6;
       line-height: 1.4;
-      background: linear-gradient(90deg, rgba(99,102,241,0.12) 0%, transparent 70%);
-      padding-top: 0.3rem;
-      padding-bottom: 0.3rem;
+      background: #f8fafc;
+      padding-top: 0.35rem;
+      padding-bottom: 0.35rem;
       border-radius: 0 0.375rem 0.375rem 0;
+      border: 1px solid #f1f5f9;
+      border-left: 4px solid #3b82f6;
     }
     .markdown-body h3 {
       display: inline-flex;
@@ -52,14 +56,14 @@
       font-size: 0.82rem;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-weight: 600;
-      color: #34d399;
-      background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.25);
-      padding: 0.35rem 0.75rem;
+      color: #047857;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      padding: 0.3rem 0.75rem;
       border-radius: 9999px;
       margin-top: 2.25rem;
-      margin-bottom: 1rem;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      margin-bottom: 1.1rem;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     }
     .markdown-body h3::before {
       content: "";
@@ -68,42 +72,44 @@
       height: 7px;
       border-radius: 50%;
       background: #10b981;
-      box-shadow: 0 0 8px #10b981;
     }
     .markdown-body p {
-      margin-bottom: 1rem;
-      line-height: 1.8;
-      color: #e2e8f0;
+      margin-bottom: 1.1rem;
+      line-height: 1.82;
+      color: #374151;
     }
     .markdown-body strong, .markdown-body b {
-      color: #fde047;
-      font-weight: 600;
+      color: #111827;
+      font-weight: 700;
+      background: rgba(254, 240, 138, 0.45);
+      padding: 0.05rem 0.25rem;
+      border-radius: 0.25rem;
     }
     .markdown-body em, .markdown-body i {
-      color: #93c5fd;
+      color: #4b5563;
       font-style: italic;
     }
     .markdown-body :not(pre) > code {
-      background: #1e1e24;
-      color: #38bdf8;
+      background: #f3f4f6;
+      color: #0f172a;
       padding: 0.15rem 0.45rem;
       border-radius: 0.35rem;
       font-size: 0.88em;
-      font-family: "JetBrains Mono", Consolas, Menlo, monospace;
-      border: 1px solid #334155;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      border: 1px solid #e5e7eb;
     }
     .markdown-body pre {
-      background: #090d16 !important;
-      border: 1px solid #1e293b;
+      background: #f8fafc !important;
+      border: 1px solid #e2e8f0;
       border-radius: 0.6rem;
       padding: 1.1rem 1.25rem;
       margin: 1.25rem 0;
       overflow-x: auto;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
     }
     .markdown-body pre code {
-      color: #e2e8f0;
-      font-family: "JetBrains Mono", Consolas, Menlo, monospace;
+      color: #1e293b;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.88rem;
       line-height: 1.65;
     }
@@ -119,16 +125,19 @@
     }
     .markdown-body li {
       margin-bottom: 0.45rem;
-      color: #cbd5e1;
-      line-height: 1.75;
+      color: #374151;
+      line-height: 1.8;
     }
     .markdown-body blockquote {
-      border-left: 4px solid #6366f1;
-      background: rgba(99, 102, 241, 0.08);
+      border-left: 4px solid #3b82f6;
+      background: #f8fafc;
       padding: 0.75rem 1.25rem;
       margin: 1.25rem 0;
       border-radius: 0 0.5rem 0.5rem 0;
-      color: #94a3b8;
+      color: #4b5563;
+      border: 1px solid #e2e8f0;
+      border-left-width: 4px;
+      border-left-color: #3b82f6;
     }
     .markdown-body table {
       width: 100%;
@@ -136,48 +145,48 @@
       margin: 1.5rem 0;
       border-radius: 0.5rem;
       overflow: hidden;
-      border: 1px solid #334155;
+      border: 1px solid #e5e7eb;
     }
     .markdown-body th {
-      background: #1e293b;
-      color: #f8fafc;
+      background: #f8fafc;
+      color: #111827;
       font-weight: 600;
       padding: 0.65rem 0.9rem;
       text-align: left;
-      border: 1px solid #334155;
+      border: 1px solid #e5e7eb;
     }
     .markdown-body td {
       padding: 0.6rem 0.9rem;
-      border: 1px solid #1e293b;
-      color: #cbd5e1;
+      border: 1px solid #e5e7eb;
+      color: #374151;
     }
     .markdown-body tr:nth-child(even) {
-      background: rgba(255, 255, 255, 0.02);
+      background: #f9fafb;
     }
     .markdown-body hr {
       border: 0;
       height: 1px;
-      background: #334155;
+      background: #e5e7eb;
       margin: 2.25rem 0;
     }
   </style>
 </head>
-<body class="bg-zinc-950 text-zinc-100 flex flex-col h-screen overflow-hidden font-sans select-none">
+<body class="bg-white text-zinc-900 flex flex-col h-screen overflow-hidden font-sans select-none">
 
   <!-- Top Header -->
-  <header class="bg-zinc-900/90 border-b border-zinc-800 px-4 py-2.5 flex items-center justify-between backdrop-blur shrink-0">
+  <header class="bg-white border-b border-zinc-200 px-4 py-2.5 flex items-center justify-between shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
     <div class="flex items-center gap-3">
       <div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
-      <span class="font-semibold text-sm tracking-wide text-zinc-100">6Pro 额度复用交互助手</span>
-      <span class="text-xs px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">单轮多任务模式</span>
+      <span class="font-semibold text-sm tracking-wide text-zinc-900">6Pro 额度复用交互助手</span>
+      <span class="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 border border-zinc-200 font-medium">单轮多任务模式</span>
     </div>
 
     <!-- Workspace directory selector -->
     <div class="flex items-center gap-2 text-xs">
-      <span class="text-zinc-500">工作区:</span>
-      <span id="workspacePath" class="text-zinc-300 font-mono bg-zinc-800 px-2 py-1 rounded border border-zinc-700 max-w-xs truncate cursor-pointer hover:border-zinc-500" title="点击更改目录">加载中...</span>
-      <button id="btnChangeWorkspace" class="px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs border border-zinc-700 transition">更改</button>
-      <button id="btnCopyPrompt" class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs shadow transition flex items-center gap-1.5">
+      <span class="text-zinc-500 font-medium">工作区:</span>
+      <span id="workspacePath" class="text-zinc-700 font-mono bg-zinc-50 px-2 py-1 rounded border border-zinc-200 max-w-xs truncate cursor-pointer hover:border-zinc-400" title="点击更改目录">加载中...</span>
+      <button id="btnChangeWorkspace" class="px-2.5 py-1 rounded bg-white hover:bg-zinc-50 text-zinc-700 text-xs border border-zinc-200 font-medium shadow-sm transition">更改</button>
+      <button id="btnCopyPrompt" class="px-3 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-xs shadow transition flex items-center gap-1.5">
         <span>📋 复制启动词</span>
       </button>
     </div>
@@ -187,56 +196,58 @@
   <main class="flex-1 flex overflow-hidden">
     
     <!-- Left Sidebar: Task Queue (TASKS.txt) -->
-    <aside class="w-80 border-r border-zinc-800 bg-zinc-900/40 flex flex-col shrink-0">
-      <div class="p-3 border-b border-zinc-800 flex items-center justify-between">
+    <aside class="w-80 border-r border-zinc-200 bg-[#fbfbfb] flex flex-col shrink-0">
+      <div class="p-3 border-b border-zinc-200 flex items-center justify-between bg-white/60">
         <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-zinc-300">待办任务队列</span>
-          <span id="taskCountBadge" class="text-xs px-1.5 py-0.2 rounded-full bg-indigo-950 text-indigo-400 font-mono border border-indigo-800">0</span>
+          <span class="text-xs font-semibold text-zinc-700">待办任务队列</span>
+          <span id="taskCountBadge" class="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-mono font-medium border border-blue-200">0</span>
         </div>
-        <button id="btnClearTasks" class="text-xs text-zinc-500 hover:text-zinc-300 transition">清空</button>
+        <button id="btnClearTasks" class="text-xs text-zinc-400 hover:text-zinc-600 transition">清空</button>
       </div>
 
       <!-- Task List Container -->
       <div id="taskList" class="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
-        <div class="text-zinc-600 italic text-center py-8">暂无待办任务<br>在底部直接输入添加</div>
+        <div class="text-zinc-400 italic text-center py-8">暂无待办任务<br>在底部直接输入添加</div>
       </div>
 
       <!-- Quick Hint -->
-      <div class="p-3 bg-zinc-900/80 border-t border-zinc-800 text-[11px] text-zinc-500 leading-relaxed">
+      <div class="p-3 bg-white/80 border-t border-zinc-200 text-[11px] text-zinc-500 leading-relaxed">
         💡 提示：在此添加任务，6pro 每完成一项会自动弹出下一项，全程在同一轮 6pro 对话中执行，不扣额外额度。
       </div>
     </aside>
 
     <!-- Right Content: Live AI Response (RESPONSE.md) -->
-    <section class="flex-1 flex flex-col bg-zinc-950 overflow-hidden">
-      <div class="p-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/20">
+    <section class="flex-1 flex flex-col bg-white overflow-hidden">
+      <div class="p-3 border-b border-zinc-200 flex items-center justify-between bg-white px-6">
         <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-zinc-300">AI 实时汇报流 (RESPONSE.md)</span>
-          <span id="liveIndicator" class="text-[11px] text-emerald-400 flex items-center gap-1">
-            <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span> 实时同步中
+          <span class="text-xs font-semibold text-zinc-800">AI 实时汇报流 (RESPONSE.md)</span>
+          <span id="liveIndicator" class="text-[11px] text-emerald-600 flex items-center gap-1 font-medium bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> 实时同步中
           </span>
         </div>
-        <button id="btnClearResponse" class="text-xs text-zinc-500 hover:text-zinc-300 transition">清空汇报</button>
+        <button id="btnClearResponse" class="text-xs text-zinc-400 hover:text-zinc-600 transition">清空汇报</button>
       </div>
 
       <!-- Markdown Output Box -->
-      <div id="responseContainer" class="flex-1 overflow-y-auto p-8 markdown-body select-text">
-        <div class="text-zinc-600 italic text-center py-16">等待 6pro 产生第一阶段汇报...</div>
+      <div id="responseContainer" class="flex-1 overflow-y-auto p-8 markdown-body select-text bg-white">
+        <div class="text-zinc-400 italic text-center py-16">等待 6pro 产生第一阶段汇报...</div>
       </div>
     </section>
 
   </main>
 
-  <!-- Bottom Input Bar -->
-  <footer class="bg-zinc-900 border-t border-zinc-800 p-3 shrink-0">
-    <div class="max-w-4xl mx-auto flex gap-2">
-      <textarea id="taskInput" rows="2" placeholder="在此输入你的新任务或追问... (按 Enter 直接加入队列发送，Shift + Enter 换行)" class="flex-1 bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500 resize-none transition"></textarea>
-      <button id="btnSendTask" class="px-5 bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm rounded-lg shadow transition flex items-center justify-center shrink-0">
-        发送指令 (Enter)
-      </button>
-      <button id="btnFinishTurn" class="px-4 bg-zinc-800 hover:bg-rose-900/50 text-zinc-300 hover:text-rose-200 border border-zinc-700 text-xs rounded-lg transition shrink-0" title="发送 /exit 让 6pro 进行最终交付收尾">
-        结束本轮 (/exit)
-      </button>
+  <!-- Bottom Input Bar (Codex Style) -->
+  <footer class="bg-white border-t border-zinc-200 p-4 shrink-0 shadow-[0_-2px_10px_rgba(0,0,0,0.02)]">
+    <div class="max-w-4xl mx-auto flex items-end gap-2 bg-[#f9fafb] border border-zinc-200 rounded-2xl p-2 shadow-sm focus-within:border-zinc-400 focus-within:bg-white transition">
+      <textarea id="taskInput" rows="2" placeholder="在此输入你的新任务或追问... (按 Enter 直接加入队列发送，Shift + Enter 换行)" class="flex-1 bg-transparent border-none px-3 py-1.5 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none resize-none leading-relaxed"></textarea>
+      <div class="flex items-center gap-2 shrink-0 pb-1 pr-1">
+        <button id="btnFinishTurn" class="px-3 py-1.5 bg-white hover:bg-rose-50 text-zinc-500 hover:text-rose-600 border border-zinc-200 text-xs rounded-xl transition shadow-sm font-medium" title="发送 /exit 让 6pro 进行最终交付收尾">
+          结束本轮 (/exit)
+        </button>
+        <button id="btnSendTask" class="px-5 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-xs rounded-xl shadow transition flex items-center justify-center gap-1">
+          <span>发送 (Enter)</span>
+        </button>
+      </div>
     </div>
   </footer>
 
@@ -267,12 +278,12 @@
       // Render tasks
       elTaskBadge.textContent = data.tasks.length;
       if (data.tasks.length === 0) {
-        elTaskList.innerHTML = '<div class="text-zinc-600 italic text-center py-8">队列已空<br>等待新任务</div>';
+        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-8">队列已空<br>等待新任务</div>';
       } else {
         elTaskList.innerHTML = data.tasks.map((task, idx) => `
-          <div class="p-2.5 rounded bg-zinc-800/70 border border-zinc-700/60 flex items-start gap-2">
-            <span class="font-mono text-zinc-500 text-[10px] mt-0.5">#${idx + 1}</span>
-            <span class="flex-1 text-zinc-200 select-text leading-snug whitespace-pre-wrap">${escapeHtml(task)}</span>
+          <div class="p-3 rounded-lg bg-white border border-zinc-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04)] flex items-start gap-2">
+            <span class="font-mono text-zinc-400 text-[11px] mt-0.5 font-medium">#${idx + 1}</span>
+            <span class="flex-1 text-zinc-800 select-text leading-snug whitespace-pre-wrap">${escapeHtml(task)}</span>
           </div>
         `).join("");
       }
@@ -288,7 +299,7 @@
           elResponse.scrollTop = elResponse.scrollHeight;
         }
       } else {
-        elResponse.innerHTML = '<div class="text-zinc-600 italic text-center py-16">等待 6pro 产生阶段汇报...</div>';
+        elResponse.innerHTML = '<div class="text-zinc-400 italic text-center py-16">等待 6pro 产生第一阶段汇报...</div>';
       }
     }
 
@@ -318,7 +329,7 @@
 
     // Clear buttons
     btnClearTasks.addEventListener("click", async () => {
-      if (confirm("确认清空任务队列？")) {
+      if (confirm("确认清空待办任务队列？")) {
         await fetch("/api/clear-tasks", { method: "POST" });
       }
     });
