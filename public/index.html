@@ -6,19 +6,160 @@
   <title>6Pro 额度复用助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
     /* Custom scrollbars */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #18181b; }
     ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #52525b; }
-    /* Markdown styling */
-    .prose pre { background: #18181b; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; border: 1px solid #27272a; margin: 0.75rem 0; }
-    .prose code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.875rem; color: #38bdf8; }
-    .prose h1, .prose h2, .prose h3 { color: #f4f4f5; font-weight: 600; margin-top: 1.25rem; margin-bottom: 0.5rem; }
-    .prose h3 { font-size: 1.1rem; color: #a1a1aa; border-bottom: 1px solid #27272a; padding-bottom: 0.25rem; }
-    .prose p { margin-bottom: 0.75rem; line-height: 1.6; color: #e4e4e7; }
-    .prose ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 0.75rem; color: #d4d4d8; }
+
+    /* Modern Dark Markdown Typography */
+    .markdown-body {
+      font-size: 15px;
+      line-height: 1.75;
+      color: #cbd5e1;
+      letter-spacing: 0.012em;
+    }
+    .markdown-body h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid #334155;
+    }
+    .markdown-body h2 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-top: 2.2rem;
+      margin-bottom: 0.85rem;
+      padding-left: 0.85rem;
+      border-left: 4px solid #6366f1;
+      line-height: 1.4;
+      background: linear-gradient(90deg, rgba(99,102,241,0.12) 0%, transparent 70%);
+      padding-top: 0.3rem;
+      padding-bottom: 0.3rem;
+      border-radius: 0 0.375rem 0.375rem 0;
+    }
+    .markdown-body h3 {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.82rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 600;
+      color: #34d399;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.25);
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      margin-top: 2.25rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+    .markdown-body h3::before {
+      content: "";
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }
+    .markdown-body p {
+      margin-bottom: 1rem;
+      line-height: 1.8;
+      color: #e2e8f0;
+    }
+    .markdown-body strong, .markdown-body b {
+      color: #fde047;
+      font-weight: 600;
+    }
+    .markdown-body em, .markdown-body i {
+      color: #93c5fd;
+      font-style: italic;
+    }
+    .markdown-body :not(pre) > code {
+      background: #1e1e24;
+      color: #38bdf8;
+      padding: 0.15rem 0.45rem;
+      border-radius: 0.35rem;
+      font-size: 0.88em;
+      font-family: "JetBrains Mono", Consolas, Menlo, monospace;
+      border: 1px solid #334155;
+    }
+    .markdown-body pre {
+      background: #090d16 !important;
+      border: 1px solid #1e293b;
+      border-radius: 0.6rem;
+      padding: 1.1rem 1.25rem;
+      margin: 1.25rem 0;
+      overflow-x: auto;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    }
+    .markdown-body pre code {
+      color: #e2e8f0;
+      font-family: "JetBrains Mono", Consolas, Menlo, monospace;
+      font-size: 0.88rem;
+      line-height: 1.65;
+    }
+    .markdown-body ul {
+      list-style-type: disc;
+      padding-left: 1.6rem;
+      margin: 0.75rem 0 1.25rem 0;
+    }
+    .markdown-body ol {
+      list-style-type: decimal;
+      padding-left: 1.6rem;
+      margin: 0.75rem 0 1.25rem 0;
+    }
+    .markdown-body li {
+      margin-bottom: 0.45rem;
+      color: #cbd5e1;
+      line-height: 1.75;
+    }
+    .markdown-body blockquote {
+      border-left: 4px solid #6366f1;
+      background: rgba(99, 102, 241, 0.08);
+      padding: 0.75rem 1.25rem;
+      margin: 1.25rem 0;
+      border-radius: 0 0.5rem 0.5rem 0;
+      color: #94a3b8;
+    }
+    .markdown-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.5rem 0;
+      border-radius: 0.5rem;
+      overflow: hidden;
+      border: 1px solid #334155;
+    }
+    .markdown-body th {
+      background: #1e293b;
+      color: #f8fafc;
+      font-weight: 600;
+      padding: 0.65rem 0.9rem;
+      text-align: left;
+      border: 1px solid #334155;
+    }
+    .markdown-body td {
+      padding: 0.6rem 0.9rem;
+      border: 1px solid #1e293b;
+      color: #cbd5e1;
+    }
+    .markdown-body tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .markdown-body hr {
+      border: 0;
+      height: 1px;
+      background: #334155;
+      margin: 2.25rem 0;
+    }
   </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 flex flex-col h-screen overflow-hidden font-sans select-none">
@@ -79,7 +220,7 @@
       </div>
 
       <!-- Markdown Output Box -->
-      <div id="responseContainer" class="flex-1 overflow-y-auto p-6 prose max-w-none text-zinc-200 select-text">
+      <div id="responseContainer" class="flex-1 overflow-y-auto p-8 markdown-body select-text">
         <div class="text-zinc-600 italic text-center py-16">等待 6pro 产生第一阶段汇报...</div>
       </div>
     </section>
@@ -100,6 +241,7 @@
   </footer>
 
   <script>
+    marked.setOptions({ gfm: true, breaks: true });
     const elWorkspace = document.getElementById("workspacePath");
     const elTaskList = document.getElementById("taskList");
     const elTaskBadge = document.getElementById("taskCountBadge");
@@ -130,7 +272,7 @@
         elTaskList.innerHTML = data.tasks.map((task, idx) => `
           <div class="p-2.5 rounded bg-zinc-800/70 border border-zinc-700/60 flex items-start gap-2">
             <span class="font-mono text-zinc-500 text-[10px] mt-0.5">#${idx + 1}</span>
-            <span class="flex-1 text-zinc-200 select-text leading-snug">${escapeHtml(task)}</span>
+            <span class="flex-1 text-zinc-200 select-text leading-snug whitespace-pre-wrap">${escapeHtml(task)}</span>
           </div>
         `).join("");
       }
@@ -139,6 +281,9 @@
       if (data.response && data.response.trim()) {
         const wasAtBottom = elResponse.scrollHeight - elResponse.scrollTop <= elResponse.clientHeight + 80;
         elResponse.innerHTML = marked.parse(data.response);
+        elResponse.querySelectorAll('pre code').forEach((block) => {
+          try { hljs.highlightElement(block); } catch {}
+        });
         if (wasAtBottom) {
           elResponse.scrollTop = elResponse.scrollHeight;
         }
