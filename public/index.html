@@ -3,253 +3,351 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>6Pro 额度复用助手</title>
+  <title>Codex - 6Pro 额度复用助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
-    /* Custom scrollbars */
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    /* Codex native minimalist scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+    ::-webkit-scrollbar-thumb { background: #e2e4e9; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #c5c8d0; }
 
     /* Codex Desktop Light Mode Typography */
-    .markdown-body {
+    .codex-markdown {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       font-size: 15px;
-      line-height: 1.8;
+      line-height: 1.75;
       color: #1f2937;
-      letter-spacing: 0.012em;
-      max-width: 880px;
-      margin: 0 auto;
+      letter-spacing: 0.005em;
     }
-    .markdown-body h1 {
-      font-size: 1.55rem;
-      font-weight: 700;
+    .codex-markdown h1 {
+      font-size: 1.45rem;
+      font-weight: 650;
       color: #111827;
-      margin-top: 2rem;
-      margin-bottom: 1rem;
-      padding-bottom: 0.5rem;
-      border-bottom: 1px solid #e5e7eb;
-    }
-    .markdown-body h2 {
-      font-size: 1.22rem;
-      font-weight: 700;
-      color: #111827;
-      margin-top: 2rem;
+      margin-top: 1.75rem;
       margin-bottom: 0.85rem;
-      padding-left: 0.85rem;
-      border-left: 4px solid #3b82f6;
-      line-height: 1.4;
-      background: #f8fafc;
-      padding-top: 0.35rem;
-      padding-bottom: 0.35rem;
-      border-radius: 0 0.375rem 0.375rem 0;
-      border: 1px solid #f1f5f9;
-      border-left: 4px solid #3b82f6;
+      letter-spacing: -0.015em;
     }
-    .markdown-body h3 {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.82rem;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-weight: 600;
-      color: #047857;
-      background: #ecfdf5;
-      border: 1px solid #a7f3d0;
-      padding: 0.3rem 0.75rem;
-      border-radius: 9999px;
-      margin-top: 2.25rem;
-      margin-bottom: 1.1rem;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-    }
-    .markdown-body h3::before {
-      content: "";
-      display: inline-block;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #10b981;
-    }
-    .markdown-body p {
-      margin-bottom: 1.1rem;
-      line-height: 1.82;
-      color: #374151;
-    }
-    .markdown-body strong, .markdown-body b {
+    .codex-markdown h2 {
+      font-size: 1.18rem;
+      font-weight: 650;
       color: #111827;
-      font-weight: 700;
-      background: rgba(254, 240, 138, 0.45);
-      padding: 0.05rem 0.25rem;
-      border-radius: 0.25rem;
+      margin-top: 1.85rem;
+      margin-bottom: 0.75rem;
+      letter-spacing: -0.01em;
+      border-bottom: 1px solid #f3f4f6;
+      padding-bottom: 0.35rem;
     }
-    .markdown-body em, .markdown-body i {
+    .codex-markdown h3 {
+      font-size: 1.02rem;
+      font-weight: 600;
+      color: #1f2937;
+      margin-top: 1.4rem;
+      margin-bottom: 0.5rem;
+    }
+    .codex-markdown p {
+      margin-bottom: 1.2rem;
+      color: #1f2937;
+      line-height: 1.75;
+    }
+    .codex-markdown strong, .codex-markdown b {
+      color: #111827;
+      font-weight: 600;
+      background: transparent !important;
+      padding: 0 !important;
+    }
+    .codex-markdown em, .codex-markdown i {
       color: #4b5563;
       font-style: italic;
     }
-    .markdown-body :not(pre) > code {
-      background: #f3f4f6;
-      color: #0f172a;
-      padding: 0.15rem 0.45rem;
-      border-radius: 0.35rem;
-      font-size: 0.88em;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      border: 1px solid #e5e7eb;
+    .codex-markdown :not(pre) > code {
+      background: #f4f4f5;
+      color: #09090b;
+      padding: 0.12rem 0.4rem;
+      border-radius: 0.3rem;
+      font-size: 0.87em;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      border: 1px solid #e4e4e7;
     }
-    .markdown-body pre {
+    .codex-markdown pre {
       background: #f8fafc !important;
       border: 1px solid #e2e8f0;
-      border-radius: 0.6rem;
-      padding: 1.1rem 1.25rem;
-      margin: 1.25rem 0;
+      border-radius: 0.55rem;
+      padding: 1rem 1.15rem;
+      margin: 1.15rem 0;
       overflow-x: auto;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
     }
-    .markdown-body pre code {
+    .codex-markdown pre code {
       color: #1e293b;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.88rem;
-      line-height: 1.65;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.86rem;
+      line-height: 1.62;
+      background: transparent !important;
+      padding: 0 !important;
+      border: none !important;
     }
-    .markdown-body ul {
+    .codex-markdown ul {
       list-style-type: disc;
-      padding-left: 1.6rem;
-      margin: 0.75rem 0 1.25rem 0;
+      padding-left: 1.5rem;
+      margin: 0.6rem 0 1.15rem 0;
     }
-    .markdown-body ol {
+    .codex-markdown ol {
       list-style-type: decimal;
-      padding-left: 1.6rem;
-      margin: 0.75rem 0 1.25rem 0;
+      padding-left: 1.5rem;
+      margin: 0.6rem 0 1.15rem 0;
     }
-    .markdown-body li {
-      margin-bottom: 0.45rem;
+    .codex-markdown li {
+      margin-bottom: 0.4rem;
       color: #374151;
-      line-height: 1.8;
+      line-height: 1.75;
     }
-    .markdown-body blockquote {
-      border-left: 4px solid #3b82f6;
-      background: #f8fafc;
-      padding: 0.75rem 1.25rem;
-      margin: 1.25rem 0;
-      border-radius: 0 0.5rem 0.5rem 0;
+    .codex-markdown blockquote {
+      border-left: 3px solid #d1d5db;
+      padding: 0.5rem 1rem;
+      margin: 1.15rem 0;
       color: #4b5563;
-      border: 1px solid #e2e8f0;
-      border-left-width: 4px;
-      border-left-color: #3b82f6;
+      background: #f9fafb;
+      border-radius: 0 0.375rem 0.375rem 0;
     }
-    .markdown-body table {
+    .codex-markdown table {
       width: 100%;
       border-collapse: collapse;
-      margin: 1.5rem 0;
-      border-radius: 0.5rem;
-      overflow: hidden;
+      margin: 1.25rem 0;
+      font-size: 0.92rem;
       border: 1px solid #e5e7eb;
     }
-    .markdown-body th {
-      background: #f8fafc;
+    .codex-markdown th {
+      background: #f9fafb;
       color: #111827;
       font-weight: 600;
-      padding: 0.65rem 0.9rem;
+      padding: 0.6rem 0.85rem;
       text-align: left;
       border: 1px solid #e5e7eb;
     }
-    .markdown-body td {
-      padding: 0.6rem 0.9rem;
+    .codex-markdown td {
+      padding: 0.55rem 0.85rem;
       border: 1px solid #e5e7eb;
       color: #374151;
     }
-    .markdown-body tr:nth-child(even) {
-      background: #f9fafb;
-    }
-    .markdown-body hr {
+    .codex-markdown hr {
       border: 0;
       height: 1px;
-      background: #e5e7eb;
-      margin: 2.25rem 0;
+      background: #f0f0f2;
+      margin: 2rem 0;
+    }
+
+    /* Codex Tool Call & Stage Action items */
+    .codex-action-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #71717a;
+      margin: 14px 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      line-height: 1.4;
+      user-select: text;
+    }
+    .codex-action-row code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: #52525b;
+      background: transparent;
+      padding: 0;
+      border: none;
+    }
+    .codex-stage-divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: #a1a1aa;
+      font-weight: 500;
+      margin: 28px 0 16px 0;
+      letter-spacing: 0.02em;
+    }
+    .codex-stage-divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #f0f0f2;
     }
   </style>
 </head>
-<body class="bg-white text-zinc-900 flex flex-col h-screen overflow-hidden font-sans select-none">
+<body class="bg-[#f9f9fb] text-zinc-900 flex h-screen overflow-hidden font-sans select-none antialiased">
 
-  <!-- Top Header -->
-  <header class="bg-white border-b border-zinc-200 px-4 py-2.5 flex items-center justify-between shrink-0 shadow-[0_1px_2px_rgba(0,0,0,0.03)]">
-    <div class="flex items-center gap-3">
-      <div class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
-      <span class="font-semibold text-sm tracking-wide text-zinc-900">6Pro 额度复用交互助手</span>
-      <span class="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 border border-zinc-200 font-medium">单轮多任务模式</span>
-    </div>
-
-    <!-- Workspace directory selector -->
-    <div class="flex items-center gap-2 text-xs">
-      <span class="text-zinc-500 font-medium">工作区:</span>
-      <span id="workspacePath" class="text-zinc-700 font-mono bg-zinc-50 px-2 py-1 rounded border border-zinc-200 max-w-xs truncate cursor-pointer hover:border-zinc-400" title="点击更改目录">加载中...</span>
-      <button id="btnChangeWorkspace" class="px-2.5 py-1 rounded bg-white hover:bg-zinc-50 text-zinc-700 text-xs border border-zinc-200 font-medium shadow-sm transition">更改</button>
-      <button id="btnCopyPrompt" class="px-3 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-xs shadow transition flex items-center gap-1.5">
-        <span>📋 复制启动词</span>
-      </button>
-    </div>
-  </header>
-
-  <!-- Main Split Layout -->
-  <main class="flex-1 flex overflow-hidden">
+  <!-- Left Sidebar (Codex Desktop Natural Gray w-64) -->
+  <aside class="w-64 bg-[#f9f9fb] border-r border-[#eaeaea] flex flex-col shrink-0 h-full select-none z-10">
     
-    <!-- Left Sidebar: Task Queue (TASKS.txt) -->
-    <aside class="w-80 border-r border-zinc-200 bg-[#fbfbfb] flex flex-col shrink-0">
-      <div class="p-3 border-b border-zinc-200 flex items-center justify-between bg-white/60">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-zinc-700">待办任务队列</span>
-          <span id="taskCountBadge" class="text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-mono font-medium border border-blue-200">0</span>
+    <!-- Codex Window Controls & Brand Header -->
+    <div class="h-11 px-3.5 flex items-center justify-between border-b border-transparent">
+      <div class="flex items-center gap-1.5 cursor-pointer hover:bg-zinc-200/50 px-1.5 py-1 rounded-md transition" title="Codex Desktop">
+        <span class="font-semibold text-[13.5px] text-zinc-800 tracking-tight">Codex</span>
+        <svg class="w-3.5 h-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+
+      <div class="flex items-center gap-0.5 text-zinc-500">
+        <button id="btnSearchTasks" class="p-1.5 rounded-md hover:bg-zinc-200/60 hover:text-zinc-800 transition" title="搜索">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+        </button>
+        <button id="btnNewTurn" class="p-1.5 rounded-md hover:bg-zinc-200/60 hover:text-zinc-800 transition" title="新对话 / 清空">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Quick Navigation Shortcuts (Codex Desktop Style) -->
+    <div class="px-2 py-1 space-y-0.5 text-[13px] text-zinc-600 font-normal">
+      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
+        <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+        </svg>
+        <span>新对话</span>
+      </div>
+      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
+        <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+        </svg>
+        <span>Pull Request</span>
+      </div>
+      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
+        <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span>定时任务</span>
+      </div>
+      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
+        <span class="text-zinc-500 font-mono text-sm pl-0.5">@</span>
+        <span class="pl-1">插件</span>
+      </div>
+    </div>
+
+    <!-- Section Divider & Header -->
+    <div class="px-3 pt-3.5 pb-1 flex items-center justify-between text-[11px] font-medium text-zinc-400 select-none">
+      <div class="flex items-center gap-1.5">
+        <span class="tracking-wide">待办任务队列</span>
+        <span id="taskCountBadge" class="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-200/70 text-zinc-600 font-mono font-medium">0</span>
+      </div>
+      <button id="btnClearTasks" class="hover:text-zinc-700 transition" title="清空待办任务">清空</button>
+    </div>
+
+    <!-- Task List (TASKS.txt) -->
+    <div id="taskList" class="flex-1 overflow-y-auto px-2 py-1 space-y-1 text-xs">
+      <div class="text-zinc-400 italic text-center py-10 text-[12px]">队列已空<br>等待新任务</div>
+    </div>
+
+    <!-- Bottom Profile & Workspace Footer -->
+    <div class="border-t border-[#eaeaea] p-2.5 flex items-center justify-between bg-[#f9f9fb] text-xs">
+      <div id="workspaceBtn" class="flex items-center gap-2 min-w-0 cursor-pointer hover:bg-zinc-200/60 p-1.5 rounded-md transition flex-1 mr-1" title="点击切换工作区路径">
+        <div class="w-5 h-5 rounded-full bg-zinc-200 flex items-center justify-center text-[10px] text-zinc-600 shrink-0 font-medium">📁</div>
+        <span id="workspacePath" class="truncate text-zinc-700 text-[11.5px] font-mono">加载中...</span>
+      </div>
+      <div class="flex items-center gap-1 shrink-0">
+        <button id="btnChangeWorkspace" class="p-1 rounded text-zinc-400 hover:text-zinc-700 hover:bg-zinc-200/60 transition" title="更改工作区">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Right Main Area (Pure White Background, Centered Column, Floating Input) -->
+  <main class="flex-1 flex flex-col bg-white relative overflow-hidden h-full">
+    
+    <!-- Top Minimalist Bar (Codex Style) -->
+    <header class="h-11 border-b border-[#f0f0f2] px-6 flex items-center justify-between shrink-0 bg-white select-none z-10">
+      <!-- Session Title / Prompt snippet -->
+      <div class="flex items-center gap-2 min-w-0 max-w-lg">
+        <span id="activeTitle" class="text-[13.5px] font-medium text-zinc-800 truncate">请开始执行本地工作区任务。完成每个阶段后调用 codex_fetch_next_task...</span>
+      </div>
+
+      <!-- Right Action Icons -->
+      <div class="flex items-center gap-3 text-zinc-500 text-xs shrink-0">
+        <div id="liveIndicator" class="flex items-center gap-1.5 text-[11.5px] text-zinc-400 shrink-0 whitespace-nowrap">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span>实时同步中</span>
         </div>
-        <button id="btnClearTasks" class="text-xs text-zinc-400 hover:text-zinc-600 transition">清空</button>
+        <button id="btnCopyPrompt" class="px-2.5 py-1 rounded-md hover:bg-zinc-100 hover:text-zinc-800 text-zinc-600 text-xs transition flex items-center gap-1.5 font-medium shrink-0 whitespace-nowrap" title="复制提示词">
+          <span>📋 复制启动词</span>
+        </button>
+        <button id="btnClearResponse" class="p-1.5 rounded-md hover:bg-zinc-100 hover:text-zinc-800 text-zinc-400 transition shrink-0" title="清空汇报历史">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
       </div>
+    </header>
 
-      <!-- Task List Container -->
-      <div id="taskList" class="flex-1 overflow-y-auto p-3 space-y-2 text-xs">
-        <div class="text-zinc-400 italic text-center py-8">暂无待办任务<br>在底部直接输入添加</div>
+    <!-- Scrollable Chat Stream (RESPONSE.md) -->
+    <div id="responseScrollArea" class="flex-1 overflow-y-auto relative select-text">
+      <!-- Centered Reading Column (max-w-[780px], ample bottom padding for floating input) -->
+      <div id="responseContainer" class="max-w-[780px] w-full mx-auto px-6 pt-7 pb-48 codex-markdown">
+        <div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>
       </div>
+    </div>
 
-      <!-- Quick Hint -->
-      <div class="p-3 bg-white/80 border-t border-zinc-200 text-[11px] text-zinc-500 leading-relaxed">
-        💡 提示：在此添加任务，6pro 每完成一项会自动弹出下一项，全程在同一轮 6pro 对话中执行，不扣额外额度。
-      </div>
-    </aside>
+    <!-- Floating Codex Input Pill (Absolute at Bottom, Centered, Big Rounded Pill) -->
+    <div class="absolute bottom-0 left-0 right-0 pointer-events-none flex justify-center px-4 pb-5 pt-10 bg-gradient-to-t from-white via-white/80 to-transparent z-20">
+      <div class="pointer-events-auto w-full max-w-[780px] bg-white border border-zinc-200/90 rounded-[24px] shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.03)] px-4 py-2.5 flex flex-col gap-1.5 transition-all duration-150 focus-within:border-zinc-350 focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.08)]">
+        
+        <!-- Textarea (随心输入) -->
+        <textarea id="taskInput" rows="2" placeholder="随心输入新任务或向 6Pro 补充指令... (按 Enter 加入队列并发送，Shift+Enter 换行)" class="w-full bg-transparent border-none p-0 text-[14.5px] text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-0 resize-none leading-relaxed min-h-[42px] max-h-36"></textarea>
 
-    <!-- Right Content: Live AI Response (RESPONSE.md) -->
-    <section class="flex-1 flex flex-col bg-white overflow-hidden">
-      <div class="p-3 border-b border-zinc-200 flex items-center justify-between bg-white px-6">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-zinc-800">AI 实时汇报流 (RESPONSE.md)</span>
-          <span id="liveIndicator" class="text-[11px] text-emerald-600 flex items-center gap-1 font-medium bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-            <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> 实时同步中
-          </span>
+        <!-- Bottom Row Inside Pill: Left Tools & Badges, Right Model & Send/Stop Button -->
+        <div class="flex items-center justify-between pt-1 select-none">
+          <!-- Left: + Button and Status Pill -->
+          <div class="flex items-center gap-2">
+            <button id="btnAttach" class="w-7 h-7 rounded-full text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 flex items-center justify-center transition" title="添加附件或工具">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+            
+            <!-- Exact Codex "完全访问" Orange Pill -->
+            <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#fef7ee] border border-[#fed7aa]/70 text-[11.5px] font-medium text-[#c2410c]" title="单轮多任务环境，自动复用会话">
+              <svg class="w-3.5 h-3.5 text-[#ea580c]" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
+              </svg>
+              <span>完全访问 · 单轮复用</span>
+            </div>
+
+            <!-- Finish Turn Quick Action -->
+            <button id="btnFinishTurn" class="text-[11.5px] text-zinc-400 hover:text-rose-600 px-2 py-0.5 rounded hover:bg-rose-50 transition" title="发送 /exit 结束当前轮次">
+              结束本轮 (/exit)
+            </button>
+          </div>
+
+          <!-- Right: Model Indicator & Black Circular Button -->
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-1.5 text-xs text-zinc-400 font-sans">
+              <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span>ChatGPT Web — High 轻度</span>
+            </div>
+
+            <!-- Native Codex Black Circle Send Button -->
+            <button id="btnSendTask" class="w-8 h-8 rounded-full bg-zinc-900 hover:bg-black text-white flex items-center justify-center transition shadow-sm active:scale-95 disabled:opacity-40" title="发送 (Enter)">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+              </svg>
+            </button>
+          </div>
         </div>
-        <button id="btnClearResponse" class="text-xs text-zinc-400 hover:text-zinc-600 transition">清空汇报</button>
-      </div>
 
-      <!-- Markdown Output Box -->
-      <div id="responseContainer" class="flex-1 overflow-y-auto p-8 markdown-body select-text bg-white">
-        <div class="text-zinc-400 italic text-center py-16">等待 6pro 产生第一阶段汇报...</div>
       </div>
-    </section>
+    </div>
 
   </main>
-
-  <!-- Bottom Input Bar (Codex Style) -->
-  <footer class="bg-white border-t border-zinc-200 p-4 shrink-0 shadow-[0_-2px_10px_rgba(0,0,0,0.02)]">
-    <div class="max-w-4xl mx-auto flex items-end gap-2 bg-[#f9fafb] border border-zinc-200 rounded-2xl p-2 shadow-sm focus-within:border-zinc-400 focus-within:bg-white transition">
-      <textarea id="taskInput" rows="2" placeholder="在此输入你的新任务或追问... (按 Enter 直接加入队列发送，Shift + Enter 换行)" class="flex-1 bg-transparent border-none px-3 py-1.5 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none resize-none leading-relaxed"></textarea>
-      <div class="flex items-center gap-2 shrink-0 pb-1 pr-1">
-        <button id="btnFinishTurn" class="px-3 py-1.5 bg-white hover:bg-rose-50 text-zinc-500 hover:text-rose-600 border border-zinc-200 text-xs rounded-xl transition shadow-sm font-medium" title="发送 /exit 让 6pro 进行最终交付收尾">
-          结束本轮 (/exit)
-        </button>
-        <button id="btnSendTask" class="px-5 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-medium text-xs rounded-xl shadow transition flex items-center justify-center gap-1">
-          <span>发送 (Enter)</span>
-        </button>
-      </div>
-    </div>
-  </footer>
 
   <script>
     marked.setOptions({ gfm: true, breaks: true });
@@ -257,12 +355,71 @@
     const elTaskList = document.getElementById("taskList");
     const elTaskBadge = document.getElementById("taskCountBadge");
     const elResponse = document.getElementById("responseContainer");
+    const elResponseScrollArea = document.getElementById("responseScrollArea");
     const elInput = document.getElementById("taskInput");
     const btnSend = document.getElementById("btnSendTask");
     const btnClearTasks = document.getElementById("btnClearTasks");
     const btnClearResponse = document.getElementById("btnClearResponse");
     const btnChangeWs = document.getElementById("btnChangeWorkspace");
+    const workspaceBtn = document.getElementById("workspaceBtn");
     const btnCopyPrompt = document.getElementById("btnCopyPrompt");
+    const btnFinishTurn = document.getElementById("btnFinishTurn");
+    const btnNewTurn = document.getElementById("btnNewTurn");
+    const activeTitle = document.getElementById("activeTitle");
+
+    // Auto-expand textarea height gracefully
+    elInput.addEventListener("input", () => {
+      elInput.style.height = "auto";
+      elInput.style.height = Math.min(elInput.scrollHeight, 140) + "px";
+    });
+
+    // Native Codex Tool Call & Action Line Formatter
+    function renderCodexContent(rawMarkdown) {
+      if (!rawMarkdown || !rawMarkdown.trim()) {
+        return '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
+      }
+
+      // Pre-process tool call lines to match Codex desktop native UI
+      const lines = rawMarkdown.split(/\r?\n/);
+      const processedLines = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // 1. Stage divider: ### 阶段汇报 [18:40:41]
+        const stageMatch = line.match(/^###\s*阶段汇报\s*\[?([0-9:]*)\]?/);
+        if (stageMatch) {
+          const time = stageMatch[1] || "";
+          processedLines.push(`<div class="codex-stage-divider"><svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><span>阶段汇报 ${time}</span></div>`);
+          continue;
+        }
+
+        // 2. Command execution: 已运行 Get-Content...
+        if (line.startsWith("已运行 ")) {
+          const cmd = line.substring(4);
+          processedLines.push(`<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m7 10 3 2-3 2M13 14h4"/></svg><span>已运行 <code>${escapeHtml(cmd)}</code></span></div>`);
+          continue;
+        }
+
+        // 3. File read: 已读取 TASKS.txt
+        if (line.startsWith("已读取 ")) {
+          const file = line.substring(4);
+          processedLines.push(`<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg><span>已读取 <code>${escapeHtml(file)}</code></span></div>`);
+          continue;
+        }
+
+        // 4. Web search: 已搜索 ...
+        if (line.startsWith("已搜索 ")) {
+          const query = line.substring(4);
+          processedLines.push(`<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20M2 12h20"/></svg><span>已搜索 ${escapeHtml(query)}</span></div>`);
+          continue;
+        }
+
+        processedLines.push(lines[i]);
+      }
+
+      return marked.parse(processedLines.join("\n"));
+    }
 
     // SSE Connection for instant real-time updates
     const evtSource = new EventSource("/api/events");
@@ -275,31 +432,39 @@
       if (data.workspace) {
         elWorkspace.textContent = data.workspace;
       }
-      // Render tasks
+
+      // Render tasks in left sidebar
       elTaskBadge.textContent = data.tasks.length;
       if (data.tasks.length === 0) {
-        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-8">队列已空<br>等待新任务</div>';
+        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-10 text-[12px]">队列已空<br>等待新任务</div>';
       } else {
         elTaskList.innerHTML = data.tasks.map((task, idx) => `
-          <div class="p-3 rounded-lg bg-white border border-zinc-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04)] flex items-start gap-2">
-            <span class="font-mono text-zinc-400 text-[11px] mt-0.5 font-medium">#${idx + 1}</span>
-            <span class="flex-1 text-zinc-800 select-text leading-snug whitespace-pre-wrap">${escapeHtml(task)}</span>
+          <div class="group flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-xs text-zinc-700 hover:bg-zinc-200/50 transition cursor-default">
+            <span class="font-mono text-zinc-400 text-[11px] shrink-0 mt-0.5">#${idx + 1}</span>
+            <span class="flex-1 line-clamp-2 leading-relaxed text-zinc-800 break-words select-text font-normal">${escapeHtml(task)}</span>
           </div>
         `).join("");
       }
 
+      // Update active title snippet
+      if (data.tasks.length > 0) {
+        activeTitle.textContent = `执行中: ${data.tasks[0]}`;
+      } else {
+        activeTitle.textContent = "请开始执行本地工作区任务。完成每个阶段后调用 codex_fetch_next_task...";
+      }
+
       // Render response
       if (data.response && data.response.trim()) {
-        const wasAtBottom = elResponse.scrollHeight - elResponse.scrollTop <= elResponse.clientHeight + 80;
-        elResponse.innerHTML = marked.parse(data.response);
+        const wasAtBottom = elResponseScrollArea.scrollHeight - elResponseScrollArea.scrollTop <= elResponseScrollArea.clientHeight + 100;
+        elResponse.innerHTML = renderCodexContent(data.response);
         elResponse.querySelectorAll('pre code').forEach((block) => {
           try { hljs.highlightElement(block); } catch {}
         });
         if (wasAtBottom) {
-          elResponse.scrollTop = elResponse.scrollHeight;
+          elResponseScrollArea.scrollTop = elResponseScrollArea.scrollHeight;
         }
       } else {
-        elResponse.innerHTML = '<div class="text-zinc-400 italic text-center py-16">等待 6pro 产生第一阶段汇报...</div>';
+        elResponse.innerHTML = '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
       }
     }
 
@@ -312,6 +477,7 @@
       const text = elInput.value.trim();
       if (!text) return;
       elInput.value = "";
+      elInput.style.height = "auto";
       await fetch("/api/add-task", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -334,7 +500,13 @@
       }
     });
 
-    const btnFinishTurn = document.getElementById("btnFinishTurn");
+    btnNewTurn.addEventListener("click", async () => {
+      if (confirm("确认清空任务队列与汇报，开启新对话？")) {
+        await fetch("/api/clear-tasks", { method: "POST" });
+        await fetch("/api/clear-response", { method: "POST" });
+      }
+    });
+
     btnFinishTurn.addEventListener("click", async () => {
       if (confirm("确认结束本轮会话并让 6pro 进行最终收尾交付？")) {
         await fetch("/api/add-task", {
@@ -352,7 +524,7 @@
     });
 
     // Change workspace
-    btnChangeWs.addEventListener("click", async () => {
+    async function changeWorkspacePrompt() {
       const target = prompt("输入工作区文件夹绝对路径：", elWorkspace.textContent);
       if (target && target.trim()) {
         await fetch("/api/set-workspace", {
@@ -361,15 +533,17 @@
           body: JSON.stringify({ workspace: target.trim() }),
         });
       }
-    });
+    }
+    btnChangeWs.addEventListener("click", changeWorkspacePrompt);
+    workspaceBtn.addEventListener("click", changeWorkspacePrompt);
 
     // Copy Prompt
     btnCopyPrompt.addEventListener("click", () => {
       const promptText = `请开始执行本地工作区任务。完成每个阶段后调用 codex_fetch_next_task 汇报进展并获取下一项，直到所有任务全部完成再交付。`;
       navigator.clipboard.writeText(promptText).then(() => {
         const orig = btnCopyPrompt.innerHTML;
-        btnCopyPrompt.innerHTML = "<span>✅ 启动词已复制!</span>";
-        setTimeout(() => btnCopyPrompt.innerHTML = orig, 2000);
+        btnCopyPrompt.innerHTML = "<span>✅ 已复制</span>";
+        setTimeout(() => btnCopyPrompt.innerHTML = orig, 1800);
       });
     });
   </script>
