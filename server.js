@@ -114,8 +114,10 @@ const server = http.createServer((req, res) => {
       try {
         const { task } = JSON.parse(body);
         if (task && task.trim()) {
+          // Collapse internal newlines so a single multi-line submission stays as ONE single task
+          const singleLineTask = task.trim().replace(/\r?\n+/g, " ");
           const p = getTasksPath();
-          fs.appendFileSync(p, task.trim() + "\n", "utf8");
+          fs.appendFileSync(p, singleLineTask + "\n", "utf8");
           broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
