@@ -175,6 +175,44 @@
       height: 1px;
       background: #f0f0f2;
     }
+
+    /* User Message Bubble Typography */
+    .codex-user-body {
+      font-size: 14.5px;
+      line-height: 1.68;
+      color: #18181b;
+    }
+    .codex-user-body p {
+      margin-bottom: 0.75rem;
+      color: #18181b;
+    }
+    .codex-user-body p:last-child {
+      margin-bottom: 0;
+    }
+    .codex-user-body h1, .codex-user-body h2, .codex-user-body h3 {
+      font-weight: 650;
+      color: #09090b;
+      margin-top: 1rem;
+      margin-bottom: 0.4rem;
+    }
+    .codex-user-body ul, .codex-user-body ol {
+      padding-left: 1.4rem;
+      margin: 0.4rem 0 0.75rem 0;
+    }
+    .codex-user-body li {
+      margin-bottom: 0.25rem;
+      line-height: 1.6;
+    }
+    .codex-user-body pre {
+      background: #ffffff !important;
+      border: 1px solid #e4e4e7;
+      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      margin: 0.75rem 0;
+    }
+    .codex-user-body code {
+      font-size: 0.88em;
+    }
   </style>
 </head>
 <body class="bg-[#f9f9fb] text-zinc-900 flex h-screen overflow-hidden font-sans select-none antialiased">
@@ -257,9 +295,9 @@
 
       <!-- Right Action Icons -->
       <div class="flex items-center gap-3 text-zinc-500 text-xs shrink-0">
-        <div id="liveIndicator" class="flex items-center gap-1.5 text-[11.5px] text-zinc-400 shrink-0 whitespace-nowrap">
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span>实时同步中</span>
+        <div id="agentStatusBadge" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 text-zinc-600 border border-zinc-200/80 transition-all duration-300 select-none" title="模型运行与等待状态">
+          <span id="agentStatusDot" class="w-2 h-2 rounded-full bg-zinc-400"></span>
+          <span id="agentStatusLabel">检测中...</span>
         </div>
         <button id="btnCopyPrompt" class="px-2.5 py-1 rounded-md hover:bg-zinc-100 hover:text-zinc-800 text-zinc-600 text-xs transition flex items-center gap-1.5 font-medium shrink-0 whitespace-nowrap" title="复制提示词">
           <span>📋 复制启动词</span>
@@ -374,42 +412,29 @@
       return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
-    // Native Codex Tool Call & Action Line Formatter
-    function renderCodexContent(rawMarkdown) {
-      if (!rawMarkdown || !rawMarkdown.trim()) {
-        return '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
-      }
-
-      // Pre-process tool call lines to match Codex desktop native UI
-      const lines = rawMarkdown.split(/\r?\n/);
+    function formatAssistantBody(text) {
+      if (!text || !text.trim()) return "";
+      const lines = text.split(/\r?\n/);
       const processedLines = [];
 
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
 
-        // 1. Stage divider: ### 阶段汇报 [18:40:41]
-        const stageMatch = line.match(/^###\s*阶段汇报\s*\[?([0-9:]*)\]?/);
-        if (stageMatch) {
-          const time = stageMatch[1] || "";
-          processedLines.push(`\n\n<div class="codex-stage-divider"><svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><span>阶段汇报 ${time}</span></div>\n\n`);
-          continue;
-        }
-
-        // 2. Command execution: 已运行 Get-Content...
+        // 1. Command execution: 已运行 Get-Content...
         if (line.startsWith("已运行 ")) {
           const cmd = line.substring(4);
           processedLines.push(`\n<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m7 10 3 2-3 2M13 14h4"/></svg><span>已运行 <code>${escapeHtml(cmd)}</code></span></div>\n`);
           continue;
         }
 
-        // 3. File read: 已读取 TASKS.txt
+        // 2. File read: 已读取 TASKS.txt
         if (line.startsWith("已读取 ")) {
           const file = line.substring(4);
           processedLines.push(`\n<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg><span>已读取 <code>${escapeHtml(file)}</code></span></div>\n`);
           continue;
         }
 
-        // 4. Web search: 已搜索 ...
+        // 3. Web search: 已搜索 ...
         if (line.startsWith("已搜索 ")) {
           const query = line.substring(4);
           processedLines.push(`\n<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20M2 12h20"/></svg><span>已搜索 ${escapeHtml(query)}</span></div>\n`);
@@ -420,6 +445,144 @@
       }
 
       return marked.parse(processedLines.join("\n"));
+    }
+
+    // Native Codex Tool Call, Stage Divider & User Message Formatter
+    function renderCodexContent(rawMarkdown) {
+      if (!rawMarkdown || !rawMarkdown.trim()) {
+        return '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
+      }
+
+      const sections = rawMarkdown.split(/(?=^###\s*(?:用户任务|阶段汇报))/m);
+      const htmlParts = [];
+
+      for (const sec of sections) {
+        const trimmed = sec.trim();
+        if (!trimmed) continue;
+
+        const match = trimmed.match(/^###\s*(用户任务|阶段汇报)\s*\[?([0-9:]*)\]?/);
+        if (match) {
+          const type = match[1];
+          const time = match[2] || "";
+          const body = trimmed.substring(match[0].length).trim();
+
+          if (type === "用户任务") {
+            const parsedBody = marked.parse(body);
+            htmlParts.push(`
+              <div class="codex-user-turn my-8 flex justify-end">
+                <div class="max-w-[92%] sm:max-w-[85%] w-full bg-[#f4f4f6] border border-[#e4e4e7] rounded-2xl px-5 py-4 shadow-sm transition hover:border-[#d4d4d8]">
+                  <div class="flex items-center justify-between gap-4 text-xs mb-2.5 pb-2 border-b border-zinc-200/70 font-sans">
+                    <div class="flex items-center gap-2">
+                      <div class="w-5 h-5 rounded-full bg-zinc-900 text-white flex items-center justify-center text-[10px] font-semibold shadow-xs">我</div>
+                      <span class="font-medium text-zinc-800 text-[13px]">用户任务</span>
+                    </div>
+                    ${time ? `<span class="font-mono text-[11px] text-zinc-400 font-normal">${escapeHtml(time)}</span>` : ''}
+                  </div>
+                  <div class="codex-user-body text-[14.5px] text-zinc-800 leading-relaxed font-normal select-text">
+                    ${parsedBody}
+                  </div>
+                </div>
+              </div>
+            `);
+            continue;
+          }
+
+          if (type === "阶段汇报") {
+            const divider = `
+              <div class="codex-stage-divider">
+                <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>阶段汇报 ${escapeHtml(time)}</span>
+              </div>
+            `;
+            htmlParts.push(divider + formatAssistantBody(body));
+            continue;
+          }
+        }
+
+        htmlParts.push(formatAssistantBody(trimmed));
+      }
+
+      return htmlParts.join("\n");
+    }
+
+    function updateAgentStatusBadge(status) {
+      const badge = document.getElementById("agentStatusBadge");
+      const dot = document.getElementById("agentStatusDot");
+      const label = document.getElementById("agentStatusLabel");
+      if (!badge || !dot || !label || !status) return;
+
+      if (status.state === "waiting") {
+        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs transition-all duration-300 select-none cursor-default";
+        dot.className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
+        label.textContent = "6Pro 在线保活中 · 等待任务";
+        badge.title = status.detail || "60秒心跳保活挂起中，随时可发新任务";
+      } else if (status.state === "running") {
+        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-800 border border-blue-200 shadow-xs transition-all duration-300 select-none cursor-default";
+        dot.className = "w-2 h-2 rounded-full bg-blue-500 animate-ping";
+        label.textContent = "6Pro 全力执行中...";
+        badge.title = status.detail || "正在处理任务中";
+      } else {
+        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 text-zinc-600 border border-zinc-200 transition-all duration-300 select-none cursor-default";
+        dot.className = "w-2 h-2 rounded-full bg-zinc-400";
+        label.textContent = "6Pro 待连接 / 离线";
+        badge.title = status.detail || "暂未检测到活跃长会话连接";
+      }
+    }
+
+    function renderStatusCard(status) {
+      if (!status) return "";
+      if (status.state === "waiting") {
+        return `
+          <div class="mt-8 mb-4 p-4 rounded-xl bg-emerald-50/70 border border-emerald-200/80 shadow-xs flex items-center justify-between transition-all select-none">
+            <div class="flex items-center gap-3">
+              <div class="relative flex h-3 w-3 shrink-0">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+              </div>
+              <div>
+                <div class="text-[13px] font-medium text-emerald-900 flex items-center gap-2">
+                  <span>模型在线待命保活中</span>
+                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-200/60 text-emerald-800 font-mono font-medium">60s Heartbeat</span>
+                </div>
+                <div class="text-[12px] text-emerald-700/90 mt-0.5">${escapeHtml(status.detail || "心跳长连接常驻中，在下方发送新任务或追问，模型将立即唤醒并执行")}</div>
+              </div>
+            </div>
+            <div class="hidden sm:flex items-center gap-1.5 text-xs text-emerald-700 font-medium bg-white/90 px-3 py-1.5 rounded-lg border border-emerald-200/60 shadow-xs">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span>待命中</span>
+            </div>
+          </div>
+        `;
+      }
+      if (status.state === "running") {
+        return `
+          <div class="mt-8 mb-4 p-4 rounded-xl bg-blue-50/70 border border-blue-200/80 shadow-xs flex items-center justify-between transition-all select-none">
+            <div class="flex items-center gap-3">
+              <div class="relative flex h-3 w-3 shrink-0">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+              </div>
+              <div>
+                <div class="text-[13px] font-medium text-blue-900 flex items-center gap-2">
+                  <span>模型正在全力执行中...</span>
+                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-blue-200/60 text-blue-800 font-mono font-medium">Busy</span>
+                </div>
+                <div class="text-[12px] text-blue-700/90 mt-0.5">${escapeHtml(status.detail || "正在改写用例、分析覆盖率或运行验证命令，请稍候...")}</div>
+              </div>
+            </div>
+            <div class="hidden sm:flex items-center gap-1.5 text-xs text-blue-700 font-medium bg-white/90 px-3 py-1.5 rounded-lg border border-blue-200/60 shadow-xs">
+              <svg class="w-3.5 h-3.5 text-blue-600 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span>执行中</span>
+            </div>
+          </div>
+        `;
+      }
+      return "";
     }
 
     // Render Session List in Sidebar
@@ -486,18 +649,28 @@
         `).join("");
       }
 
+      // Update Agent Status Badge
+      updateAgentStatusBadge(data.agentStatus);
+
       // Render response
+      const wasAtBottom = elResponseScrollArea.scrollHeight - elResponseScrollArea.scrollTop <= elResponseScrollArea.clientHeight + 100;
+      let contentHtml = "";
       if (data.response && data.response.trim()) {
-        const wasAtBottom = elResponseScrollArea.scrollHeight - elResponseScrollArea.scrollTop <= elResponseScrollArea.clientHeight + 100;
-        elResponse.innerHTML = renderCodexContent(data.response);
-        elResponse.querySelectorAll('pre code').forEach((block) => {
-          try { hljs.highlightElement(block); } catch {}
-        });
-        if (wasAtBottom) {
-          elResponseScrollArea.scrollTop = elResponseScrollArea.scrollHeight;
-        }
+        contentHtml = renderCodexContent(data.response);
       } else {
-        elResponse.innerHTML = '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
+        contentHtml = '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
+      }
+
+      // Append real-time status card at bottom of conversation
+      const cardHtml = renderStatusCard(data.agentStatus);
+      elResponse.innerHTML = contentHtml + cardHtml;
+
+      elResponse.querySelectorAll('pre code').forEach((block) => {
+        try { hljs.highlightElement(block); } catch {}
+      });
+
+      if (wasAtBottom) {
+        elResponseScrollArea.scrollTop = elResponseScrollArea.scrollHeight;
       }
     }
 

@@ -181,6 +181,76 @@ function setActiveSessionId(sessionId) {
   return clean;
 }
 
+const LOG_PATH = "C:\\Users\\13914\\.local\\state\\tunnel-client\\logs\\codex-chatgpt-web.log";
+
+function getAgentStatus(tasksCount = 0) {
+  if (tasksCount > 0) {
+    return {
+      state: "running",
+      label: "6Pro 执行中",
+      detail: `队列中有 ${tasksCount} 项任务正在处理...`
+    };
+  }
+
+  try {
+    if (!fs.existsSync(LOG_PATH)) {
+      return { state: "offline", label: "6Pro 待连接", detail: "尚未检测到隧道日志，请复制启动词在 ChatGPT 开启会话" };
+    }
+    const stat = fs.statSync(LOG_PATH);
+    const readSize = Math.min(stat.size, 16384);
+    const fd = fs.openSync(LOG_PATH, "r");
+    const buffer = Buffer.alloc(readSize);
+    fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
+    fs.closeSync(fd);
+
+    const logText = buffer.toString("utf8");
+    const lines = logText.trim().split("\n").filter(Boolean);
+
+    let lastMcp = null;
+    let lastTime = null;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (line.includes("[chatgpt-web-mcp]") && !lastMcp) {
+        try {
+          const jsonStr = line.substring(line.indexOf("{"));
+          lastMcp = JSON.parse(jsonStr);
+        } catch {}
+      }
+      if (line.includes("\"time\":\"") && !lastTime) {
+        try {
+          const tm = line.match(/"time":"([^"]+)"/);
+          if (tm) lastTime = new Date(tm[1]).getTime();
+        } catch {}
+      }
+      if (lastMcp && lastTime) break;
+    }
+
+    const now = Date.now();
+    const ageSec = lastTime ? (now - lastTime) / 1000 : (now - stat.mtimeMs) / 1000;
+
+    if (ageSec > 180) {
+      return { state: "offline", label: "6Pro 待连接", detail: "超过 3 分钟无活动，等待会话启动" };
+    }
+
+    if (lastMcp) {
+      if (lastMcp.tool === "codex_exec" && ageSec < 120) {
+        return { state: "running", label: "6Pro 执行中", detail: "模型正在分析代码或执行命令..." };
+      }
+      return {
+        state: "waiting",
+        label: "6Pro 在线待命",
+        detail: "60 秒心跳保活中，随时接收新任务",
+        lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+      };
+    }
+
+    return { state: "waiting", label: "6Pro 在线待命", detail: "连接正常" };
+  } catch (e) {
+    return { state: "unknown", label: "状态检测中", detail: e.message };
+  }
+}
+
 const sseClients = new Set();
 
 function broadcastUpdate() {
@@ -189,12 +259,14 @@ function broadcastUpdate() {
   for (const client of sseClients) {
     try {
       const sessId = client._targetSessionId || currentActive;
+      const tasks = readSessionTasks(sessId);
       const data = JSON.stringify({
         workspace: currentWorkspace,
         activeSessionId: sessId,
         sessions,
-        tasks: readSessionTasks(sessId),
+        tasks,
         response: readSessionResponse(sessId),
+        agentStatus: getAgentStatus(tasks.length),
         epoch: Date.now(),
       });
       client.write(`data: ${data}\n\n`);
@@ -220,6 +292,19 @@ function setupWatcher() {
   }
 }
 setupWatcher();
+
+// Status change poll every 2.5 seconds to instantly reflect agent waiting / running state
+let lastBroadcastStatusKey = "";
+setInterval(() => {
+  const currentActive = getActiveSessionId();
+  const tasks = readSessionTasks(currentActive);
+  const st = getAgentStatus(tasks.length);
+  const statusKey = `${st.state}:${st.label}:${st.detail}`;
+  if (statusKey !== lastBroadcastStatusKey) {
+    lastBroadcastStatusKey = statusKey;
+    broadcastUpdate();
+  }
+}, 2500);
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
@@ -248,12 +333,14 @@ const server = http.createServer((req, res) => {
 
     // Initial state
     const sessions = listSessions();
+    const queryTasks = readSessionTasks(querySession);
     res.write(`data: ${JSON.stringify({
       workspace: currentWorkspace,
       activeSessionId: querySession,
       sessions,
-      tasks: readSessionTasks(querySession),
+      tasks: queryTasks,
       response: readSessionResponse(querySession),
+      agentStatus: getAgentStatus(queryTasks.length),
       epoch: Date.now(),
     })}\n\n`);
 
@@ -382,13 +469,15 @@ const server = http.createServer((req, res) => {
   // Get current state
   if (url.pathname === "/api/info" && req.method === "GET") {
     const sId = sanitizeSessionId(url.searchParams.get("session_id"));
+    const tasks = readSessionTasks(sId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       workspace: currentWorkspace,
       activeSessionId: sId,
       sessions: listSessions(),
-      tasks: readSessionTasks(sId),
+      tasks,
       response: readSessionResponse(sId),
+      agentStatus: getAgentStatus(tasks.length),
     }));
     return;
   }
@@ -406,6 +495,12 @@ const server = http.createServer((req, res) => {
           const sessionDir = getSessionDir(sId);
           const tasksPath = path.join(sessionDir, "TASKS.txt");
           safeAppendFile(tasksPath, singleLineTask + "\n");
+
+          // Also record user task into RESPONSE.md so user prompt is preserved and rendered in the conversation stream
+          const responsePath = path.join(sessionDir, "RESPONSE.md");
+          const timeStr = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+          const userTaskBlock = `\n\n### 用户任务 [${timeStr}]\n${task.trim()}\n\n`;
+          safeAppendFile(responsePath, userTaskBlock);
 
           // Update meta
           const meta = getSessionMeta(sId);
