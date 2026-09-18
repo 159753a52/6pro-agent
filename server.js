@@ -181,54 +181,10 @@ function setActiveSessionId(sessionId) {
   return clean;
 }
 
-function syncWorkspaceToSession(sessionId) {
-  if (!sessionId || sessionId === "default") return;
-  const sessionDir = getSessionDir(sessionId);
-  const sessRespPath = path.join(sessionDir, "RESPONSE.md");
-  const sessTasksPath = path.join(sessionDir, "TASKS.txt");
-  const rootRespPath = path.join(currentWorkspace, "RESPONSE.md");
-  const rootTasksPath = path.join(currentWorkspace, "TASKS.txt");
-
-  // 1. Sync RESPONSE.md
-  const rootResp = safeReadFile(rootRespPath);
-  const sessResp = safeReadFile(sessRespPath);
-  if (rootResp) {
-    const rootSections = rootResp.split(/(?=### 阶段汇报)/).map(s => s.trim()).filter(Boolean);
-    const sessSections = sessResp.split(/(?=### 阶段汇报)/).map(s => s.trim()).filter(Boolean);
-
-    let startIdx = -1;
-    if (sessSections.length > 0) {
-      const firstSessSec = sessSections[0];
-      startIdx = rootSections.findIndex(s => s === firstSessSec || s.includes(firstSessSec.slice(0, 50)));
-    }
-    if (startIdx !== -1) {
-      const targetSections = rootSections.slice(startIdx);
-      if (targetSections.length > sessSections.length) {
-        safeWriteFile(sessRespPath, targetSections.join("\n\n") + "\n");
-      }
-    } else if (sessSections.length === 0 && rootSections.length > 0) {
-      safeWriteFile(sessRespPath, rootSections[rootSections.length - 1] + "\n");
-    }
-  }
-
-  // 2. Sync TASKS.txt
-  const rootTasksRaw = safeReadFile(rootTasksPath);
-  const sessTasksRaw = safeReadFile(sessTasksPath);
-  const rootTasks = rootTasksRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const sessTasks = sessTasksRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
-  if (rootTasks.length === 0 && sessTasks.length > 0) {
-    safeWriteFile(sessTasksPath, "");
-  } else if (rootTasks.length < sessTasks.length) {
-    safeWriteFile(sessTasksPath, rootTasks.join("\n") + (rootTasks.length > 0 ? "\n" : ""));
-  }
-}
-
 const sseClients = new Set();
 
-function broadcastUpdate(targetSessionId = null) {
-  const currentActive = targetSessionId ? setActiveSessionId(targetSessionId) : getActiveSessionId();
-  syncWorkspaceToSession(currentActive);
+function broadcastUpdate() {
+  const currentActive = getActiveSessionId();
   const sessions = listSessions();
   for (const client of sseClients) {
     try {
@@ -255,9 +211,7 @@ function setupWatcher() {
       if (filename.includes("TASKS.txt") || filename.includes("RESPONSE.md") || filename.includes("meta.json")) {
         clearTimeout(watchDebounce);
         watchDebounce = setTimeout(() => {
-          const currentActive = getActiveSessionId();
-          syncWorkspaceToSession(currentActive);
-          broadcastUpdate(currentActive);
+          broadcastUpdate();
         }, 80);
       }
     });
@@ -284,10 +238,6 @@ const server = http.createServer((req, res) => {
   // SSE stream
   if (url.pathname === "/api/events") {
     const querySession = sanitizeSessionId(url.searchParams.get("session_id"));
-    if (querySession && querySession !== "default") {
-      setActiveSessionId(querySession);
-    }
-    syncWorkspaceToSession(querySession);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -322,8 +272,7 @@ const server = http.createServer((req, res) => {
         const { session_id } = JSON.parse(body || "{}");
         const safeId = sanitizeSessionId(session_id);
         setActiveSessionId(safeId);
-        syncWorkspaceToSession(safeId);
-        broadcastUpdate(safeId);
+        broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, activeSessionId: safeId, tasks: readSessionTasks(safeId), response: readSessionResponse(safeId) }));
       } catch (e) {
@@ -357,7 +306,7 @@ const server = http.createServer((req, res) => {
           updatedAt: Date.now(),
         };
         saveSessionMeta(safeId, meta);
-        broadcastUpdate(safeId);
+        broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, session: meta, sessions: listSessions() }));
       } catch (e) {
@@ -381,7 +330,7 @@ const server = http.createServer((req, res) => {
           meta.name = name.trim().slice(0, 40);
           meta.updatedAt = Date.now();
           saveSessionMeta(safeId, meta);
-          broadcastUpdate(safeId);
+          broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, session: meta, sessions: listSessions() }));
@@ -419,7 +368,7 @@ const server = http.createServer((req, res) => {
             }
           }
         }
-        broadcastUpdate("default");
+        broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, sessions: listSessions() }));
       } catch (e) {
@@ -433,10 +382,6 @@ const server = http.createServer((req, res) => {
   // Get current state
   if (url.pathname === "/api/info" && req.method === "GET") {
     const sId = sanitizeSessionId(url.searchParams.get("session_id"));
-    if (sId && sId !== "default") {
-      setActiveSessionId(sId);
-    }
-    syncWorkspaceToSession(sId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       workspace: currentWorkspace,
@@ -471,10 +416,7 @@ const server = http.createServer((req, res) => {
           }
           saveSessionMeta(sId, meta);
 
-          // Dual-write to root workspace TASKS.txt so any running bridge instance picks it up
-          safeAppendFile(path.join(currentWorkspace, "TASKS.txt"), singleLineTask + "\n");
-
-          broadcastUpdate(sId);
+          broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), sessions: listSessions() }));
@@ -496,8 +438,7 @@ const server = http.createServer((req, res) => {
         const sId = sanitizeSessionId(session_id);
         const p = path.join(getSessionDir(sId), "TASKS.txt");
         safeWriteFile(p, "");
-        safeWriteFile(path.join(currentWorkspace, "TASKS.txt"), "");
-        broadcastUpdate(sId);
+        broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
@@ -518,10 +459,7 @@ const server = http.createServer((req, res) => {
         const sId = sanitizeSessionId(session_id);
         const p = path.join(getSessionDir(sId), "RESPONSE.md");
         safeWriteFile(p, "");
-        if (sId === "default") {
-          safeWriteFile(path.join(currentWorkspace, "RESPONSE.md"), "");
-        }
-        broadcastUpdate(sId);
+        broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true }));
       } catch (e) {
@@ -584,7 +522,7 @@ const server = http.createServer((req, res) => {
           currentWorkspace = path.resolve(workspace);
           ensureDefaultSession();
           setupWatcher();
-          broadcastUpdate("default");
+          broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, workspace: currentWorkspace }));

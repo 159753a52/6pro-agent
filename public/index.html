@@ -772,10 +772,20 @@
 
     // Copy Prompt (Session tailored)
     btnCopyPrompt.addEventListener("click", () => {
-      const promptText = `请开始执行本地会话 [${activeSessionId}] 的任务。请优先读取工作区 TASKS.txt 领取任务，按阶段执行并在 RESPONSE.md 写入以 "### 阶段汇报 [时间]" 开头的详细成果报告与数据表格，每完成一个阶段继续读取 TASKS.txt 处理下一项任务，持续保持轮询等待用户新任务，不要终结本轮。`;
+      const currentMeta = (currentSessionsCache || []).find(s => s.id === activeSessionId);
+      const sessionName = currentMeta ? currentMeta.name : activeSessionId;
+      const promptText = `你当前已绑定本地会话【${sessionName}】（Session ID: ${activeSessionId}）。\n` +
+        `专属工作区会话目录：sessions/${activeSessionId}/\n\n` +
+        `【工作流与通信协议】\n` +
+        `1. 任务领取与汇报：必须通过 MCP 工具 codex_fetch_next_task 与本地通信。每次调用必须显式传入参数 session_id="${activeSessionId}"。\n` +
+        `2. 阶段汇报要求：每完成一项任务，把完整成果报告填入 step_summary，并调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 提交汇报并领取下一项任务。\n` +
+        `3. 轮询静默等待：如果返回的 next_task 是 '__POLL__'，表示用户暂无新指令，严禁向用户输出任何文本或结束语，必须立刻再次调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="__POLL__") 保持静默轮询。\n` +
+        `4. 严禁终结本轮：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才调用 codex_turn_complete 终结本轮。\n` +
+        `5. 会话隔离安全：严禁读取或写入根目录下的 TASKS.txt 或 RESPONSE.md，所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
+        `现在请立即调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="会话已建立，开始等待任务") 领取第一个任务！`;
       navigator.clipboard.writeText(promptText).then(() => {
         const orig = btnCopyPrompt.innerHTML;
-        btnCopyPrompt.innerHTML = "<span>✅ 已复制</span>";
+        btnCopyPrompt.innerHTML = "<span>✅ 已复制会话专属提示词</span>";
         setTimeout(() => btnCopyPrompt.innerHTML = orig, 1800);
       });
     });
