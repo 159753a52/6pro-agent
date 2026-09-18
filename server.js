@@ -151,12 +151,46 @@ function listSessions() {
   return result;
 }
 
+const sessionTasksCache = new Map();
+const isClearingTasks = new Set();
+
 function readSessionTasks(sessionId) {
   const dir = getSessionDir(sessionId);
   const p = path.join(dir, "TASKS.txt");
   const raw = safeReadFile(p);
-  if (!raw) return [];
-  return raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const currentTasks = raw ? raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [];
+
+  if (!sessionTasksCache.has(sessionId)) {
+    sessionTasksCache.set(sessionId, currentTasks);
+    return currentTasks;
+  }
+
+  const prevTasks = sessionTasksCache.get(sessionId);
+  sessionTasksCache.set(sessionId, currentTasks);
+
+  if (isClearingTasks.has(sessionId)) {
+    return currentTasks;
+  }
+
+  // Detect if tasks were consumed from the head of the queue by the model
+  if (prevTasks.length > currentTasks.length) {
+    const poppedCount = prevTasks.length - currentTasks.length;
+    // Verify if remaining tasks match the tail of prevTasks
+    const matchesTail = currentTasks.every((t, i) => t === prevTasks[i + poppedCount]);
+    if (matchesTail) {
+      const poppedTasks = prevTasks.slice(0, poppedCount);
+      const responsePath = path.join(getSessionDir(sessionId), "RESPONSE.md");
+      const timeStr = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      for (const pt of poppedTasks) {
+        if (pt && pt.trim()) {
+          const userTaskBlock = `\n\n### 用户任务 [${timeStr}]\n${pt.trim()}\n\n`;
+          safeAppendFile(responsePath, userTaskBlock);
+        }
+      }
+    }
+  }
+
+  return currentTasks;
 }
 
 function readSessionResponse(sessionId) {
@@ -183,15 +217,7 @@ function setActiveSessionId(sessionId) {
 
 const LOG_PATH = "C:\\Users\\13914\\.local\\state\\tunnel-client\\logs\\codex-chatgpt-web.log";
 
-function getAgentStatus(tasksCount = 0) {
-  if (tasksCount > 0) {
-    return {
-      state: "running",
-      label: "6Pro 执行中",
-      detail: `队列中有 ${tasksCount} 项任务正在处理...`
-    };
-  }
-
+function getAgentStatus(tasksCount = 0, sessionId = "default") {
   try {
     if (!fs.existsSync(LOG_PATH)) {
       return { state: "offline", label: "6Pro 待连接", detail: "尚未检测到隧道日志，请复制启动词在 ChatGPT 开启会话" };
@@ -229,13 +255,55 @@ function getAgentStatus(tasksCount = 0) {
     const now = Date.now();
     const ageSec = lastTime ? (now - lastTime) / 1000 : (now - stat.mtimeMs) / 1000;
 
-    if (ageSec > 180) {
+    // Check session age if meta.json exists
+    let sessionAgeMin = 0;
+    try {
+      const metaPath = path.join(getSessionDir(sessionId), "meta.json");
+      if (fs.existsSync(metaPath)) {
+        const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+        if (meta.createdAt) {
+          sessionAgeMin = (now - meta.createdAt) / 60000;
+        }
+      }
+    } catch {}
+
+    // Case 1: 1-hour timeout / stopped thinking stall
+    // When no heartbeat for > 90s, and there are either unfinished tasks or session ran > 45m
+    if (ageSec > 90) {
+      if (tasksCount > 0 || sessionAgeMin >= 45) {
+        const prompt = `你当前继续绑定本地会话【${sessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${sessionId}", step_summary="续接第2轮执行") 领取待办任务并继续执行。`;
+        return {
+          state: "timeout_1h",
+          label: "⚠️ 1小时限时断开 · 待续接",
+          detail: `检测到模型已中断（超过 ${Math.round(ageSec / 60)} 分钟无心跳，已达云端 1 小时限时）。待办任务完好保留在队列中，请在原网页直接发送指令接力下一轮！`,
+          resumePrompt: prompt,
+          sessionId,
+          tasksCount,
+          lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+        };
+      }
       return { state: "offline", label: "6Pro 待连接", detail: "超过 3 分钟无活动，等待会话启动" };
     }
 
+    // Case 2: Actively running tasks
+    if (tasksCount > 0) {
+      return {
+        state: "running",
+        label: "6Pro 执行中",
+        detail: `队列中有 ${tasksCount} 项任务正在处理...`,
+        lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+      };
+    }
+
+    // Case 3: Running tool
     if (lastMcp) {
       if (lastMcp.tool === "codex_exec" && ageSec < 120) {
-        return { state: "running", label: "6Pro 执行中", detail: "模型正在分析代码或执行命令..." };
+        return {
+          state: "running",
+          label: "6Pro 执行中",
+          detail: "模型正在分析代码或执行命令...",
+          lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+        };
       }
       return {
         state: "waiting",
@@ -266,7 +334,7 @@ function broadcastUpdate() {
         sessions,
         tasks,
         response: readSessionResponse(sessId),
-        agentStatus: getAgentStatus(tasks.length),
+        agentStatus: getAgentStatus(tasks.length, sessId),
         epoch: Date.now(),
       });
       client.write(`data: ${data}\n\n`);
@@ -298,7 +366,7 @@ let lastBroadcastStatusKey = "";
 setInterval(() => {
   const currentActive = getActiveSessionId();
   const tasks = readSessionTasks(currentActive);
-  const st = getAgentStatus(tasks.length);
+  const st = getAgentStatus(tasks.length, currentActive);
   const statusKey = `${st.state}:${st.label}:${st.detail}`;
   if (statusKey !== lastBroadcastStatusKey) {
     lastBroadcastStatusKey = statusKey;
@@ -340,7 +408,7 @@ const server = http.createServer((req, res) => {
       sessions,
       tasks: queryTasks,
       response: readSessionResponse(querySession),
-      agentStatus: getAgentStatus(queryTasks.length),
+      agentStatus: getAgentStatus(queryTasks.length, querySession),
       epoch: Date.now(),
     })}\n\n`);
 
@@ -477,7 +545,7 @@ const server = http.createServer((req, res) => {
       sessions: listSessions(),
       tasks,
       response: readSessionResponse(sId),
-      agentStatus: getAgentStatus(tasks.length),
+      agentStatus: getAgentStatus(tasks.length, sId),
     }));
     return;
   }
@@ -494,13 +562,15 @@ const server = http.createServer((req, res) => {
           const singleLineTask = task.trim().replace(/\r?\n+/g, " ");
           const sessionDir = getSessionDir(sId);
           const tasksPath = path.join(sessionDir, "TASKS.txt");
+
+          // Update cache so readSessionTasks knows this addition is queued by user
+          const prev = sessionTasksCache.get(sId) || [];
+          sessionTasksCache.set(sId, [...prev, singleLineTask]);
+
           safeAppendFile(tasksPath, singleLineTask + "\n");
 
-          // Also record user task into RESPONSE.md so user prompt is preserved and rendered in the conversation stream
-          const responsePath = path.join(sessionDir, "RESPONSE.md");
-          const timeStr = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-          const userTaskBlock = `\n\n### 用户任务 [${timeStr}]\n${task.trim()}\n\n`;
-          safeAppendFile(responsePath, userTaskBlock);
+          // Note: Do NOT append to RESPONSE.md here!
+          // Tasks stay in the left queue until the model actually pops them!
 
           // Update meta
           const meta = getSessionMeta(sId);
@@ -532,8 +602,11 @@ const server = http.createServer((req, res) => {
       try {
         const { session_id } = JSON.parse(body || "{}");
         const sId = sanitizeSessionId(session_id);
+        isClearingTasks.add(sId);
+        sessionTasksCache.set(sId, []);
         const p = path.join(getSessionDir(sId), "TASKS.txt");
         safeWriteFile(p, "");
+        setTimeout(() => isClearingTasks.delete(sId), 500);
         broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true }));

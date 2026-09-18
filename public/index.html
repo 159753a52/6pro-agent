@@ -520,13 +520,40 @@
       return htmlParts.join("\n");
     }
 
+    function copyResumePrompt(text, btnEl) {
+      if (!text) text = "请在当前会话中继续调用 codex_fetch_next_task 领取待办任务并执行。";
+      navigator.clipboard.writeText(text).then(() => {
+        if (btnEl) {
+          const orig = btnEl.innerHTML;
+          btnEl.innerHTML = "<span>✅ 续接词已复制！去网页端粘贴</span>";
+          btnEl.classList.remove("bg-amber-600", "hover:bg-amber-700");
+          btnEl.classList.add("bg-emerald-600", "hover:bg-emerald-700");
+          setTimeout(() => {
+            btnEl.innerHTML = orig;
+            btnEl.classList.remove("bg-emerald-600", "hover:bg-emerald-700");
+            btnEl.classList.add("bg-amber-600", "hover:bg-amber-700");
+          }, 3000);
+        } else {
+          alert("✅ 续接指令已复制到剪贴板！请直接前往 ChatGPT 原网页粘贴发送。");
+        }
+      });
+    }
+    window.copyResumePrompt = copyResumePrompt;
+
     function updateAgentStatusBadge(status) {
       const badge = document.getElementById("agentStatusBadge");
       const dot = document.getElementById("agentStatusDot");
       const label = document.getElementById("agentStatusLabel");
       if (!badge || !dot || !label || !status) return;
 
-      if (status.state === "waiting") {
+      badge.onclick = null;
+      if (status.state === "timeout_1h") {
+        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-900 border border-amber-300 shadow-xs transition-all duration-300 select-none cursor-pointer hover:bg-amber-100";
+        dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
+        label.textContent = "⚠️ 1小时限时断开 · 点击续接";
+        badge.title = status.detail || "已达1小时限时，点击复制续接词";
+        badge.onclick = () => copyResumePrompt(status.resumePrompt);
+      } else if (status.state === "waiting") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs transition-all duration-300 select-none cursor-default";
         dot.className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
         label.textContent = "6Pro 在线保活中 · 等待任务";
@@ -546,6 +573,42 @@
 
     function renderStatusCard(status) {
       if (!status) return "";
+      if (status.state === "timeout_1h") {
+        const promptEscaped = escapeHtml(status.resumePrompt || "请在当前会话中继续调用 codex_fetch_next_task 领取待办任务并执行。");
+        return `
+          <div class="mt-8 mb-4 p-4 rounded-xl bg-amber-50/90 border-2 border-amber-300/90 shadow-sm flex flex-col gap-3 transition-all select-none">
+            <div class="flex items-start justify-between gap-3">
+              <div class="flex items-start gap-3">
+                <div class="p-2 rounded-lg bg-amber-100 text-amber-800 shrink-0 mt-0.5">
+                  <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <div>
+                  <div class="text-[14px] font-semibold text-amber-950 flex items-center gap-2">
+                    <span>检测到模型单轮 1 小时限时已达（无法思考）</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-900 font-mono font-bold">1h Timeout</span>
+                  </div>
+                  <div class="text-[12.5px] text-amber-800 mt-1 leading-relaxed">
+                    OpenAI 云端网关在单轮推导满 1 小时后会自动掐断连接。<b>前序代码和用例已安全落盘，未完成任务完好保留在待办队列中。</b>
+                  </div>
+                </div>
+              </div>
+              <div class="shrink-0 flex items-center gap-2">
+                <button onclick="copyResumePrompt('${promptEscaped}', this)" class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer">
+                  <span>📋 复制续接指令</span>
+                </button>
+              </div>
+            </div>
+            <div class="p-2.5 rounded-lg bg-white/90 border border-amber-200/70 text-xs text-amber-900 flex items-center justify-between">
+              <div class="flex items-center gap-1.5">
+                <span class="font-semibold text-amber-950">👉 无缝续接方法：</span>
+                <span><b>切勿新建会话！</b>直接在刚刚的 ChatGPT 网页端点击<b>“重试 (Regenerate)”</b>或输入<b>“继续”</b>发送，即可自动接力下 1 小时！</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }
       if (status.state === "waiting") {
         return `
           <div class="mt-8 mb-4 p-4 rounded-xl bg-emerald-50/70 border border-emerald-200/80 shadow-xs flex items-center justify-between transition-all select-none">
