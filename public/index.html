@@ -207,34 +207,27 @@
 
     <!-- Quick Navigation Shortcuts (Codex Desktop Style) -->
     <div class="px-2 py-1 space-y-0.5 text-[13px] text-zinc-600 font-normal">
-      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
+      <div id="btnNewDraftChat" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition font-medium text-zinc-800">
         <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
         </svg>
         <span>新对话</span>
       </div>
-      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
-        <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-        </svg>
-        <span>Pull Request</span>
-      </div>
-      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
-        <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <span>定时任务</span>
-      </div>
-      <div class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition">
-        <span class="text-zinc-500 font-mono text-sm pl-0.5">@</span>
-        <span class="pl-1">插件</span>
-      </div>
     </div>
 
-    <!-- Section Divider & Header -->
-    <div class="px-3 pt-3.5 pb-1 flex items-center justify-between text-[11px] font-medium text-zinc-400 select-none">
+    <!-- Section: Recents / Sessions List -->
+    <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[11px] font-medium text-zinc-400 select-none">
+      <span class="tracking-wide">历史会话</span>
+      <button id="btnCreateSession" class="hover:text-zinc-700 transition font-normal" title="新建命名会话">+ 新建</button>
+    </div>
+    <div id="sessionList" class="max-h-48 overflow-y-auto px-2 py-0.5 space-y-0.5 text-xs">
+      <!-- Dynamic session items injected here -->
+    </div>
+
+    <!-- Section Divider & Header: Current Tasks -->
+    <div class="px-3 pt-3 pb-1 flex items-center justify-between text-[11px] font-medium text-zinc-400 select-none border-t border-[#eaeaea] mt-1">
       <div class="flex items-center gap-1.5">
-        <span class="tracking-wide">待办任务队列</span>
+        <span class="tracking-wide">当前待办队列</span>
         <span id="taskCountBadge" class="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-200/70 text-zinc-600 font-mono font-medium">0</span>
       </div>
       <button id="btnClearTasks" class="hover:text-zinc-700 transition" title="清空待办任务">清空</button>
@@ -242,7 +235,7 @@
 
     <!-- Task List (TASKS.txt) -->
     <div id="taskList" class="flex-1 overflow-y-auto px-2 py-1 space-y-1 text-xs">
-      <div class="text-zinc-400 italic text-center py-10 text-[12px]">队列已空<br>等待新任务</div>
+      <div class="text-zinc-400 italic text-center py-6 text-[12px]">队列已空<br>等待新任务</div>
     </div>
 
     <!-- Bottom Profile & Workspace Footer -->
@@ -268,8 +261,9 @@
     <!-- Top Minimalist Bar (Codex Style) -->
     <header class="h-11 border-b border-[#f0f0f2] px-6 flex items-center justify-between shrink-0 bg-white select-none z-10">
       <!-- Session Title / Prompt snippet -->
-      <div class="flex items-center gap-2 min-w-0 max-w-lg">
-        <span id="activeTitle" class="text-[13.5px] font-medium text-zinc-800 truncate">请开始执行本地工作区任务。完成每个阶段后调用 codex_fetch_next_task...</span>
+      <div class="flex items-center gap-2.5 min-w-0 max-w-lg">
+        <span id="activeSessionBadge" class="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-100 text-zinc-600 border border-zinc-200 shrink-0 select-none">default</span>
+        <span id="activeTitle" class="text-[13.5px] font-medium text-zinc-800 truncate">默认会话</span>
       </div>
 
       <!-- Right Action Icons -->
@@ -352,6 +346,8 @@
   <script>
     marked.setOptions({ gfm: true, breaks: true });
     const elWorkspace = document.getElementById("workspacePath");
+    const elSessionList = document.getElementById("sessionList");
+    const elActiveSessionBadge = document.getElementById("activeSessionBadge");
     const elTaskList = document.getElementById("taskList");
     const elTaskBadge = document.getElementById("taskCountBadge");
     const elResponse = document.getElementById("responseContainer");
@@ -365,13 +361,25 @@
     const btnCopyPrompt = document.getElementById("btnCopyPrompt");
     const btnFinishTurn = document.getElementById("btnFinishTurn");
     const btnNewTurn = document.getElementById("btnNewTurn");
+    const btnNewDraftChat = document.getElementById("btnNewDraftChat");
+    const btnCreateSession = document.getElementById("btnCreateSession");
     const activeTitle = document.getElementById("activeTitle");
+
+    let activeSessionId = localStorage.getItem("6pro_active_session") || "default";
+    let isDraftNewSession = false;
+    let lastEpoch = 0;
+    let currentSessionsCache = [];
+    const sessionBus = window.BroadcastChannel ? new BroadcastChannel("6pro_session_bus") : null;
 
     // Auto-expand textarea height gracefully
     elInput.addEventListener("input", () => {
       elInput.style.height = "auto";
       elInput.style.height = Math.min(elInput.scrollHeight, 140) + "px";
     });
+
+    function escapeHtml(str) {
+      return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
 
     // Native Codex Tool Call & Action Line Formatter
     function renderCodexContent(rawMarkdown) {
@@ -421,36 +429,64 @@
       return marked.parse(processedLines.join("\n"));
     }
 
-    // SSE Connection for instant real-time updates
-    const evtSource = new EventSource("/api/events");
-    evtSource.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      updateUI(data);
-    };
+    // Render Session List in Sidebar
+    function renderSessions(sessions) {
+      if (!sessions) return;
+      currentSessionsCache = sessions;
+      elSessionList.innerHTML = sessions.map(sess => {
+        const isActive = !isDraftNewSession && sess.id === activeSessionId;
+        return `
+          <div class="group flex items-center justify-between px-2.5 py-1.5 rounded-md cursor-pointer transition ${isActive ? 'bg-zinc-200/80 text-zinc-900 font-medium' : 'text-zinc-600 hover:bg-zinc-200/40 hover:text-zinc-900'}" onclick="selectSession('${escapeHtml(sess.id)}')">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
+              <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+              </svg>
+              <span class="truncate text-[12.5px]">${escapeHtml(sess.name || sess.id)}</span>
+            </div>
+            <div class="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
+              <button class="p-0.5 hover:text-zinc-900 rounded" onclick="event.stopPropagation(); renameSessionPrompt('${escapeHtml(sess.id)}', '${escapeHtml(sess.name || '')}')" title="重命名">✏️</button>
+              ${sess.id !== 'default' ? `<button class="p-0.5 hover:text-rose-600 rounded" onclick="event.stopPropagation(); deleteSessionConfirm('${escapeHtml(sess.id)}')" title="删除会话">🗑️</button>` : ''}
+            </div>
+            ${sess.taskCount > 0 ? `<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-200/70 text-zinc-600 font-mono ml-1 shrink-0">${sess.taskCount}</span>` : ''}
+          </div>
+        `;
+      }).join("");
+    }
 
     function updateUI(data) {
       if (data.workspace) {
         elWorkspace.textContent = data.workspace;
       }
 
-      // Render tasks in left sidebar
-      elTaskBadge.textContent = data.tasks.length;
-      if (data.tasks.length === 0) {
-        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-10 text-[12px]">队列已空<br>等待新任务</div>';
+      if (data.sessions) {
+        renderSessions(data.sessions);
+      }
+
+      if (isDraftNewSession) return;
+
+      // Update badge and title
+      const currentMeta = currentSessionsCache.find(s => s.id === activeSessionId);
+      elActiveSessionBadge.textContent = activeSessionId;
+      elActiveSessionBadge.className = "text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-100 text-zinc-600 border border-zinc-200 shrink-0 select-none";
+
+      if (data.tasks && data.tasks.length > 0) {
+        activeTitle.textContent = `执行中: ${data.tasks[0]}`;
       } else {
-        elTaskList.innerHTML = data.tasks.map((task, idx) => `
+        activeTitle.textContent = currentMeta ? currentMeta.name : (activeSessionId === "default" ? "默认会话" : activeSessionId);
+      }
+
+      // Render tasks in left sidebar
+      const tasks = data.tasks || [];
+      elTaskBadge.textContent = tasks.length;
+      if (tasks.length === 0) {
+        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-6 text-[12px]">队列已空<br>等待新任务</div>';
+      } else {
+        elTaskList.innerHTML = tasks.map((task, idx) => `
           <div class="group flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-xs text-zinc-700 hover:bg-zinc-200/50 transition cursor-default">
             <span class="font-mono text-zinc-400 text-[11px] shrink-0 mt-0.5">#${idx + 1}</span>
             <span class="flex-1 line-clamp-2 leading-relaxed text-zinc-800 break-words select-text font-normal">${escapeHtml(task)}</span>
           </div>
         `).join("");
-      }
-
-      // Update active title snippet
-      if (data.tasks.length > 0) {
-        activeTitle.textContent = `执行中: ${data.tasks[0]}`;
-      } else {
-        activeTitle.textContent = "请开始执行本地工作区任务。完成每个阶段后调用 codex_fetch_next_task...";
       }
 
       // Render response
@@ -468,9 +504,74 @@
       }
     }
 
-    function escapeHtml(str) {
-      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // Switch active session
+    window.selectSession = async function(sessId) {
+      if (isDraftNewSession) isDraftNewSession = false;
+      activeSessionId = sessId;
+      localStorage.setItem("6pro_active_session", sessId);
+      connectSSE(sessId);
+      try {
+        const res = await fetch(`/api/info?session_id=${encodeURIComponent(sessId)}`);
+        const data = await res.json();
+        updateUI(data);
+      } catch {}
+      if (sessionBus) sessionBus.postMessage({ type: "SESSION_SWITCHED", sessionId: sessId });
+    };
+
+    // Start draft for new session (Codex Desktop lazy creation model)
+    function startDraftNewSession() {
+      isDraftNewSession = true;
+      elActiveSessionBadge.textContent = "新建中";
+      elActiveSessionBadge.className = "text-[11px] font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-200 shrink-0 select-none";
+      activeTitle.textContent = "新对话 (输入第一条任务即自举创建)";
+      elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-6 text-[12px]">输入新任务即可创建会话</div>';
+      elTaskBadge.textContent = "0";
+      elResponse.innerHTML = '<div class="text-zinc-400 italic text-center py-20 text-sm">新对话准备就绪。在下方输入任务并发送，将自动生成会话并开始执行。</div>';
+      renderSessions(currentSessionsCache);
+      elInput.focus();
     }
+
+    window.renameSessionPrompt = async function(id, oldName) {
+      const newName = prompt("请输入新会话名称：", oldName);
+      if (newName && newName.trim() && newName.trim() !== oldName) {
+        await fetch("/api/sessions/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, name: newName.trim() }),
+        });
+      }
+    };
+
+    window.deleteSessionConfirm = async function(id) {
+      if (confirm(`确认删除会话 [${id}] 吗？`)) {
+        await fetch("/api/sessions/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        if (activeSessionId === id) {
+          selectSession("default");
+        }
+      }
+    };
+
+    // SSE Connection for instant real-time updates
+    let evtSource = null;
+    function connectSSE(sessionId) {
+      if (evtSource) {
+        evtSource.close();
+      }
+      evtSource = new EventSource(`/api/events?session_id=${encodeURIComponent(sessionId)}`);
+      evtSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.epoch && data.epoch < lastEpoch) return;
+          if (data.epoch) lastEpoch = data.epoch;
+          updateUI(data);
+        } catch {}
+      };
+    }
+    connectSSE(activeSessionId);
 
     // Send task
     async function submitTask() {
@@ -478,10 +579,29 @@
       if (!text) return;
       elInput.value = "";
       elInput.style.height = "auto";
+
+      let targetSess = activeSessionId;
+      if (isDraftNewSession) {
+        const newId = `sess_${Date.now().toString(36)}`;
+        const newName = text.slice(0, 24);
+        try {
+          await fetch("/api/sessions/create", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: newId, name: newName }),
+          });
+          targetSess = newId;
+          activeSessionId = newId;
+          isDraftNewSession = false;
+          localStorage.setItem("6pro_active_session", newId);
+          connectSSE(newId);
+        } catch {}
+      }
+
       await fetch("/api/add-task", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: text }),
+        body: JSON.stringify({ task: text, session_id: targetSess }),
       });
     }
 
@@ -493,33 +613,50 @@
       }
     });
 
-    // Clear buttons
-    btnClearTasks.addEventListener("click", async () => {
-      if (confirm("确认清空待办任务队列？")) {
-        await fetch("/api/clear-tasks", { method: "POST" });
+    btnNewDraftChat.addEventListener("click", startDraftNewSession);
+    btnNewTurn.addEventListener("click", startDraftNewSession);
+
+    btnCreateSession.addEventListener("click", async () => {
+      const name = prompt("请输入新会话名称：", "新对话");
+      if (name && name.trim()) {
+        const newId = `sess_${Date.now().toString(36)}`;
+        await fetch("/api/sessions/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: newId, name: name.trim() }),
+        });
+        selectSession(newId);
       }
     });
 
-    btnNewTurn.addEventListener("click", async () => {
-      if (confirm("确认清空任务队列与汇报，开启新对话？")) {
-        await fetch("/api/clear-tasks", { method: "POST" });
-        await fetch("/api/clear-response", { method: "POST" });
+    // Clear buttons
+    btnClearTasks.addEventListener("click", async () => {
+      if (confirm(`确认清空会话 [${activeSessionId}] 的待办任务队列？`)) {
+        await fetch("/api/clear-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: activeSessionId }),
+        });
       }
     });
 
     btnFinishTurn.addEventListener("click", async () => {
-      if (confirm("确认结束本轮会话并让 6pro 进行最终收尾交付？")) {
+      if (confirm(`确认结束会话 [${activeSessionId}] 的本轮交互并让 6pro 进行最终收尾交付？`)) {
         await fetch("/api/add-task", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ task: "/exit" }),
+          body: JSON.stringify({ task: "/exit", session_id: activeSessionId }),
         });
       }
     });
 
     btnClearResponse.addEventListener("click", async () => {
-      if (confirm("确认清空历史汇报？")) {
-        await fetch("/api/clear-response", { method: "POST" });
+      if (confirm(`确认清空会话 [${activeSessionId}] 的历史汇报？`)) {
+        await fetch("/api/clear-response", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: activeSessionId }),
+        });
       }
     });
 
@@ -537,15 +674,23 @@
     btnChangeWs.addEventListener("click", changeWorkspacePrompt);
     workspaceBtn.addEventListener("click", changeWorkspacePrompt);
 
-    // Copy Prompt
+    // Copy Prompt (Session tailored)
     btnCopyPrompt.addEventListener("click", () => {
-      const promptText = `请开始执行本地工作区任务。完成每个阶段后调用 codex_fetch_next_task 汇报进展并获取下一项，直到所有任务全部完成再交付。`;
+      const promptText = `请开始执行本地会话 [${activeSessionId}] 的工作区任务。完成每个阶段后调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 汇报进展并获取下一项，直到所有任务全部完成再交付。`;
       navigator.clipboard.writeText(promptText).then(() => {
         const orig = btnCopyPrompt.innerHTML;
         btnCopyPrompt.innerHTML = "<span>✅ 已复制</span>";
         setTimeout(() => btnCopyPrompt.innerHTML = orig, 1800);
       });
     });
+
+    if (sessionBus) {
+      sessionBus.onmessage = (e) => {
+        if (e.data && e.data.type === "SESSION_SWITCHED") {
+          fetch(`/api/sessions`).then(r => r.json()).then(d => renderSessions(d.sessions));
+        }
+      };
+    }
   </script>
 </body>
 </html>
