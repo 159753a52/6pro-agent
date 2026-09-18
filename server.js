@@ -216,44 +216,77 @@ function setActiveSessionId(sessionId) {
 }
 
 const LOG_PATH = "C:\\Users\\13914\\.local\\state\\tunnel-client\\logs\\codex-chatgpt-web.log";
+const LAUNCHER_LOG_PATH = path.join(
+  process.env.APPDATA || "C:\\Users\\13914\\AppData\\Roaming",
+  "Codex Web GPT",
+  "logs",
+  "launcher.jsonl"
+);
 
-function getAgentStatus(tasksCount = 0, sessionId = "default") {
+function getBrowserStatus() {
   try {
-    if (!fs.existsSync(LOG_PATH)) {
-      return { state: "offline", label: "6Pro 待连接", detail: "尚未检测到隧道日志，请复制启动词在 ChatGPT 开启会话" };
-    }
-    const stat = fs.statSync(LOG_PATH);
+    if (!fs.existsSync(LAUNCHER_LOG_PATH)) return { isGenerating: false, lastEvent: null, ageSec: 999 };
+    const stat = fs.statSync(LAUNCHER_LOG_PATH);
     const readSize = Math.min(stat.size, 16384);
-    const fd = fs.openSync(LOG_PATH, "r");
+    const fd = fs.openSync(LAUNCHER_LOG_PATH, "r");
     const buffer = Buffer.alloc(readSize);
     fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
     fs.closeSync(fd);
+    const lines = buffer.toString("utf8").trim().split("\n").filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const item = JSON.parse(lines[i]);
+        if (item.event === "browser.turn_ended") {
+          const ageSec = (Date.now() - new Date(item.at).getTime()) / 1000;
+          return { isGenerating: false, lastEvent: "turn_ended", ageSec };
+        }
+        if (item.event === "browser.turn_heartbeat") {
+          const ageSec = (Date.now() - new Date(item.at).getTime()) / 1000;
+          return { isGenerating: ageSec < 25, lastEvent: "turn_heartbeat", ageSec };
+        }
+      } catch {}
+    }
+  } catch {}
+  return { isGenerating: false, lastEvent: null, ageSec: 999 };
+}
 
-    const logText = buffer.toString("utf8");
-    const lines = logText.trim().split("\n").filter(Boolean);
+function getAgentStatus(tasksCount = 0, sessionId = "default") {
+  try {
+    const browser = getBrowserStatus();
 
     let lastMcp = null;
     let lastTime = null;
+    let stat = null;
+    if (fs.existsSync(LOG_PATH)) {
+      stat = fs.statSync(LOG_PATH);
+      const readSize = Math.min(stat.size, 16384);
+      const fd = fs.openSync(LOG_PATH, "r");
+      const buffer = Buffer.alloc(readSize);
+      fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
+      fs.closeSync(fd);
 
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i];
-      if (line.includes("[chatgpt-web-mcp]") && !lastMcp) {
-        try {
-          const jsonStr = line.substring(line.indexOf("{"));
-          lastMcp = JSON.parse(jsonStr);
-        } catch {}
+      const logText = buffer.toString("utf8");
+      const lines = logText.trim().split("\n").filter(Boolean);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line.includes("[chatgpt-web-mcp]") && !lastMcp) {
+          try {
+            const jsonStr = line.substring(line.indexOf("{"));
+            lastMcp = JSON.parse(jsonStr);
+          } catch {}
+        }
+        if (line.includes("\"time\":\"") && !lastTime) {
+          try {
+            const tm = line.match(/"time":"([^"]+)"/);
+            if (tm) lastTime = new Date(tm[1]).getTime();
+          } catch {}
+        }
+        if (lastMcp && lastTime) break;
       }
-      if (line.includes("\"time\":\"") && !lastTime) {
-        try {
-          const tm = line.match(/"time":"([^"]+)"/);
-          if (tm) lastTime = new Date(tm[1]).getTime();
-        } catch {}
-      }
-      if (lastMcp && lastTime) break;
     }
 
     const now = Date.now();
-    const ageSec = lastTime ? (now - lastTime) / 1000 : (now - stat.mtimeMs) / 1000;
+    const ageSec = lastTime ? (now - lastTime) / 1000 : (stat ? (now - stat.mtimeMs) / 1000 : 999);
 
     // Check session age if meta.json exists
     let sessionAgeMin = 0;
@@ -267,49 +300,64 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       }
     } catch {}
 
-    // Case 1: 1-hour timeout / stopped thinking stall
-    // When no heartbeat for > 90s, and there are either unfinished tasks or session ran > 45m
-    if (ageSec > 90) {
-      if (tasksCount > 0 || sessionAgeMin >= 45) {
-        const prompt = `你当前继续绑定本地会话【${sessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${sessionId}", step_summary="续接第2轮执行") 领取待办任务并继续执行。`;
-        return {
-          state: "timeout_1h",
-          label: "⚠️ 1小时限时断开 · 待续接",
-          detail: `检测到模型已中断（超过 ${Math.round(ageSec / 60)} 分钟无心跳，已达云端 1 小时限时）。待办任务完好保留在队列中，请在原网页直接发送指令接力下一轮！`,
-          resumePrompt: prompt,
-          sessionId,
-          tasksCount,
-          lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
-        };
-      }
-      return { state: "offline", label: "6Pro 待连接", detail: "超过 3 分钟无活动，等待会话启动" };
-    }
+    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${sessionId}", step_summary="续接执行待办任务") 领取待办任务并继续执行。\n【防断流硬性要求】：每步命令执行完毕或产出数据后，必须在 90 秒内立即调用 codex_fetch_next_task 汇报打卡，严禁脱离工具超长自顾自沉思，防止云端网络断流！`;
 
-    // Case 2: Actively running tasks
-    if (tasksCount > 0) {
+    // Case 1: 1-hour timeout (session ran >= 50m AND no heartbeat for > 90s)
+    if (sessionAgeMin >= 50 && ageSec > 90) {
       return {
-        state: "running",
-        label: "6Pro 执行中",
-        detail: `队列中有 ${tasksCount} 项任务正在处理...`,
-        lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+        state: "timeout_1h",
+        label: "⚠️ 1小时限时已达 · 待续接",
+        title: "检测到模型单轮 1 小时限时已达（已停止思考）",
+        tag: "1h Timeout",
+        detail: `会话已进行 ${Math.round(sessionAgeMin)} 分钟，已达云端单轮推导限时。待办任务完好保留在队列中，请在原网页直接发送指令接力下一轮！`,
+        resumePrompt,
+        sessionId,
+        tasksCount,
+        lastActive: new Date(lastTime || (stat ? stat.mtimeMs : now)).toLocaleTimeString("zh-CN", { hour12: false })
       };
     }
 
-    // Case 3: Running tool
-    if (lastMcp) {
-      if (lastMcp.tool === "codex_exec" && ageSec < 120) {
+    // Case 2: Browser has stopped generating (turn ended)
+    if (!browser.isGenerating) {
+      if (tasksCount > 0) {
         return {
-          state: "running",
-          label: "6Pro 执行中",
-          detail: "模型正在分析代码或执行命令...",
-          lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+          state: "waiting_resume",
+          label: "⚠️ 网页端已停笔 · 待发指令接力",
+          title: "检测到模型在网页端已停止生成（待命接力）",
+          tag: "Turn Ended",
+          detail: `模型在 ChatGPT 网页端上一轮生成已停笔，待办队列中有 ${tasksCount} 项任务尚未领取。请在 ChatGPT 网页端直接发送“继续”接力！`,
+          resumePrompt,
+          sessionId,
+          tasksCount,
+          lastActive: new Date(lastTime || (stat ? stat.mtimeMs : now)).toLocaleTimeString("zh-CN", { hour12: false })
         };
+      }
+      if (ageSec > 180) {
+        return { state: "offline", label: "6Pro 待连接 / 离线", detail: "网页端已停笔且暂无新待办任务" };
       }
       return {
         state: "waiting",
         label: "6Pro 在线待命",
-        detail: "60 秒心跳保活中，随时接收新任务",
-        lastActive: new Date(lastTime || stat.mtimeMs).toLocaleTimeString("zh-CN", { hour12: false })
+        detail: "网页端生成已结束，随时可下发新任务",
+        lastActive: new Date(lastTime || (stat ? stat.mtimeMs : now)).toLocaleTimeString("zh-CN", { hour12: false })
+      };
+    }
+
+    // Case 3: Browser is actively generating in ChatGPT Web
+    if (browser.isGenerating) {
+      if (lastMcp && lastMcp.tool === "codex_exec" && ageSec < 60) {
+        return {
+          state: "running",
+          label: "6Pro 执行远端命令中...",
+          detail: "模型正在调用本地工具或在远端 ECS 执行任务...",
+          lastActive: new Date(lastTime || now).toLocaleTimeString("zh-CN", { hour12: false })
+        };
+      }
+      return {
+        state: "running",
+        label: "6Pro 深度思考中...",
+        detail: "网页端正在实时推理与数据分析中（心跳正常，请稍候）...",
+        lastActive: new Date(lastTime || now).toLocaleTimeString("zh-CN", { hour12: false })
       };
     }
 

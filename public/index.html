@@ -620,12 +620,11 @@
       if (!badge || !dot || !label || !status) return;
 
       badge.onclick = null;
-      if (status.state === "timeout_1h") {
-        currentResumePromptText = status.resumePrompt || "请在当前会话中继续调用 codex_fetch_next_task 领取待办任务并执行。";
+      if (status.state === "timeout_1h" || status.state === "waiting_resume") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-900 border border-amber-300 shadow-xs transition-all duration-300 select-none cursor-pointer hover:bg-amber-100";
         dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
-        label.textContent = "⚠️ 1小时限时断开 · 点击续接";
-        badge.title = status.detail || "已达1小时限时，点击复制续接词";
+        label.textContent = status.label || "⚠️ 网页端已停笔 · 待发指令接力";
+        badge.title = status.detail || "点击复制续接词并在 ChatGPT 网页端发送";
         badge.onclick = () => copyCurrentResumePrompt(badge);
       } else if (status.state === "waiting") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs transition-all duration-300 select-none cursor-default";
@@ -635,20 +634,23 @@
       } else if (status.state === "running") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-800 border border-blue-200 shadow-xs transition-all duration-300 select-none cursor-default";
         dot.className = "w-2 h-2 rounded-full bg-blue-500 animate-ping";
-        label.textContent = "6Pro 全力执行中...";
+        label.textContent = status.label || "6Pro 全力执行中...";
         badge.title = status.detail || "正在处理任务中";
       } else {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 text-zinc-600 border border-zinc-200 transition-all duration-300 select-none cursor-default";
         dot.className = "w-2 h-2 rounded-full bg-zinc-400";
-        label.textContent = "6Pro 待连接 / 离线";
+        label.textContent = status.label || "6Pro 待连接 / 离线";
         badge.title = status.detail || "暂未检测到活跃长会话连接";
       }
     }
 
     function renderStatusCard(status) {
       if (!status) return "";
-      if (status.state === "timeout_1h") {
-        currentResumePromptText = status.resumePrompt || `你当前继续绑定本地会话【${activeSessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="续接第2轮执行") 领取待办任务并继续执行。`;
+      if (status.state === "timeout_1h" || status.state === "waiting_resume") {
+        currentResumePromptText = status.resumePrompt || `你当前继续绑定本地会话【${activeSessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="续接执行任务") 领取待办任务并继续执行。`;
+        const cardTitle = status.title || "检测到模型在网页端已停止生成（待命接力）";
+        const cardTag = status.tag || "Turn Ended";
+        const cardDetail = status.detail || "模型上一轮推导已停笔。未完成任务完好保留在待办队列中。";
         return `
           <div class="mt-8 mb-4 p-4 rounded-xl bg-amber-50/95 border-2 border-amber-300 shadow-sm flex flex-col gap-3 transition-all select-none">
             <div class="flex items-start justify-between gap-3">
@@ -660,11 +662,11 @@
                 </div>
                 <div>
                   <div class="text-[14px] font-semibold text-amber-950 flex items-center gap-2">
-                    <span>检测到模型单轮 1 小时限时已达（已停止思考）</span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-900 font-mono font-bold">1h Timeout</span>
+                    <span>${escapeHtml(cardTitle)}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-900 font-mono font-bold">${escapeHtml(cardTag)}</span>
                   </div>
                   <div class="text-[12.5px] text-amber-800 mt-1 leading-relaxed">
-                    OpenAI 云端网关在单轮满 1 小时后会断开连接。<b>代码修改已安全落盘，未完成任务完好保留在待办队列中。</b>
+                    ${escapeHtml(cardDetail)}
                   </div>
                 </div>
               </div>
@@ -678,7 +680,7 @@
             <div class="p-3 rounded-lg bg-white border border-amber-200 text-xs text-amber-950 flex flex-col gap-2">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-1.5 font-semibold text-amber-950">
-                  <span>👉 续接方法：请前往 Codex 桌面客户端（切勿直接在 ChatGPT 网页发），在底部输入框粘贴发送该指令！</span>
+                  <span>👉 续接方法：直接在刚刚的 ChatGPT 网页端输入“继续”发送（或粘贴复制的续接指令），即可自动接力执行！</span>
                 </div>
                 <span class="text-[11px] text-zinc-400">点击下方框内可全选复制</span>
               </div>
@@ -1080,9 +1082,13 @@
         `   - 如果返回的 next_task 是 '__POLL__'，说明用户暂无新指令、正在本地编辑任务。\n` +
         `   - 【硬性要求】：严禁向用户输出任何解释文字或结束语，必须立刻再次调用 codex_fetch_next_task 保持静默等待。\n` +
         `   - 只要 has_next 为 true，绝对严禁结束对话，必须依靠循环调用工具保持心跳保活常驻！\n` +
-        `3. 阶段汇报要求：拿到真实任务后全力执行；每完成一项任务，把完整成果报告填入 step_summary，并调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 提交汇报并领取下一项任务。\n` +
-        `4. 终结退出通道：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才做最终汇报并结束本轮（若存在 codex_turn_complete 则调用，无则直接输出最终结论）。\n` +
-        `5. 会话隔离安全：所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
+        `3. 【防断流与高频打卡硬性禁令（核心保障）】：\n` +
+        `   - 严禁在拿到命令或实验数据后，脱离工具自顾自进行超过 90 秒的长时间思考！\n` +
+        `   - 每步命令执行完毕或产出数据后，必须在 90 秒内立即调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 进行阶段打卡汇报！\n` +
+        `   - 必须通过高频调用 MCP 工具保持底层通信隧道持续活跃，防止云端网络异常断流！\n` +
+        `4. 阶段汇报要求：拿到真实任务后全力执行；每完成一项任务，把完整成果报告填入 step_summary，并调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 提交汇报并领取下一项任务。\n` +
+        `5. 终结退出通道：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才做最终汇报并结束本轮（若存在 codex_turn_complete 则调用，无则直接输出最终结论）。\n` +
+        `6. 会话隔离安全：所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
         `现在请立即调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="会话已建立，开始等待任务") 领取第一个任务！`;
       copyToClipboard(promptText).then(() => {
         showCopyToast(`已复制【${sessionName.slice(0, 10)}】启动词`);
