@@ -300,7 +300,7 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       }
     } catch {}
 
-    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${sessionId}", step_summary="续接执行任务") 领取待办任务。\n【工作流禁令】：严禁在中间微观步骤（查代码、微调一行、编译中）频繁打卡刷屏！必须自主端到端闭环跑完【方案微调 -> 远端编译 -> 契约验证 -> 跑完 A/B 评测 -> 评估结论】整套流程，只有在产出一轮明确的性能测试数据或最终达标时才做正式里程碑汇报！`;
+    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${sessionId}", step_summary="续接执行任务") 领取待办任务并继续执行。\n【工作流原则】：严禁微观碎步频繁打卡！请在后台自主端到端闭环推进完整任务流程，中间过程静默执行，仅在取得明确的阶段性交付成果或最终结论时再统一汇报！`;
 
     // Case 1: 1-hour timeout (session ran >= 50m AND no heartbeat for > 90s)
     if (sessionAgeMin >= 50 && ageSec > 90) {
