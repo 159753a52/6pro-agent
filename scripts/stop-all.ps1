@@ -1,4 +1,4 @@
-# 6pro 任务服务一键停止脚本
+﻿# 6pro 任务服务一键停止脚本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 | Out-Null
@@ -39,4 +39,5 @@ if ($tunnelProc) {
 }
 
 Write-Host "`n所有 6pro 相关后台服务已安全停止。" -ForegroundColor Yellow
-Start-Sleep -Seconds 2
+Write-Host "按回车键退出..." -ForegroundColor Gray
+[void][System.Console]::ReadLine()

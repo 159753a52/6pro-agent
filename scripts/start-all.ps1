@@ -1,5 +1,4 @@
-# 6pro 任务服务一键启动脚本
-# PowerShell UTF-8 编码设置
+﻿# 6pro 任务服务一键启动脚本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 | Out-Null
@@ -36,7 +35,6 @@ if ($port17841) {
     Write-Host "  -> [启动] 正在后台启动 17841 调度服务..." -ForegroundColor Magenta
     Start-Process -FilePath $bunExe -ArgumentList "`"$cliJs`"", "serve" -WindowStyle Hidden
     
-    # 等待端口就绪
     $ready = $false
     for ($i = 0; $i -lt 10; $i++) {
         Start-Sleep -Milliseconds 500
@@ -96,4 +94,6 @@ Write-Host "====================================================" -ForegroundCol
 
 Start-Process "http://127.0.0.1:17888"
 
-Start-Sleep -Seconds 2
+Write-Host "`n提示：所有后台服务已保持常驻运行，可安全关闭本窗口。" -ForegroundColor Gray
+Write-Host "按回车键退出..." -ForegroundColor Gray
+[void][System.Console]::ReadLine()
