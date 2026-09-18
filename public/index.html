@@ -1082,13 +1082,12 @@
         `   - 如果返回的 next_task 是 '__POLL__'，说明用户暂无新指令、正在本地编辑任务。\n` +
         `   - 【硬性要求】：严禁向用户输出任何解释文字或结束语，必须立刻再次调用 codex_fetch_next_task 保持静默等待。\n` +
         `   - 只要 has_next 为 true，绝对严禁结束对话，必须依靠循环调用工具保持心跳保活常驻！\n` +
-        `3. 【防断流与高频打卡硬性禁令（核心保障）】：\n` +
-        `   - 严禁在拿到命令或实验数据后，脱离工具自顾自进行超过 90 秒的长时间思考！\n` +
-        `   - 每步命令执行完毕或产出数据后，必须在 90 秒内立即调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 进行阶段打卡汇报！\n` +
-        `   - 必须通过高频调用 MCP 工具保持底层通信隧道持续活跃，防止云端网络异常断流！\n` +
-        `4. 阶段汇报要求：拿到真实任务后全力执行；每完成一项任务，把完整成果报告填入 step_summary，并调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 提交汇报并领取下一项任务。\n` +
-        `5. 终结退出通道：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才做最终汇报并结束本轮（若存在 codex_turn_complete 则调用，无则直接输出最终结论）。\n` +
-        `6. 会话隔离安全：所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
+        `3. 【任务闭环与汇报原则（严禁碎步打卡刷屏）】：\n` +
+        `   - 必须保持大粒度端到端自主闭环：针对优化目标，在后台自主连续完成【方案微调 -> 远端编译 -> 契约验证 -> A/B 基准测量 -> 评估结论】整套链路！\n` +
+        `   - 严禁在中间微观碎步（如单纯查文件、改一行代码、正在编译）频繁调用工具汇报打卡刷屏！只要在执行命令，底层连接即为活跃状态。\n` +
+        `   - 仅当完整完成一轮有效性能复验并拿到确切 QPS 数据，或真正攻克 15% 目标完成 commit/push 时，才调用 codex_fetch_next_task 做一次里程碑成果汇报！\n` +
+        `4. 终结退出通道：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才做最终汇报并结束本轮（若存在 codex_turn_complete 则调用，无则直接输出最终结论）。\n` +
+        `5. 会话隔离安全：所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
         `现在请立即调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="会话已建立，开始等待任务") 领取第一个任务！`;
       copyToClipboard(promptText).then(() => {
         showCopyToast(`已复制【${sessionName.slice(0, 10)}】启动词`);
