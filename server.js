@@ -165,13 +165,74 @@ function readSessionResponse(sessionId) {
   return safeReadFile(p);
 }
 
+const activeSessionFile = path.join(currentWorkspace, ".active_session");
+
+function getActiveSessionId() {
+  const saved = safeReadFile(activeSessionFile).trim();
+  if (saved && fs.existsSync(getSessionDir(saved))) {
+    return sanitizeSessionId(saved);
+  }
+  return "default";
+}
+
+function setActiveSessionId(sessionId) {
+  const clean = sanitizeSessionId(sessionId);
+  safeWriteFile(activeSessionFile, clean);
+  return clean;
+}
+
+function syncWorkspaceToSession(sessionId) {
+  if (!sessionId || sessionId === "default") return;
+  const sessionDir = getSessionDir(sessionId);
+  const sessRespPath = path.join(sessionDir, "RESPONSE.md");
+  const sessTasksPath = path.join(sessionDir, "TASKS.txt");
+  const rootRespPath = path.join(currentWorkspace, "RESPONSE.md");
+  const rootTasksPath = path.join(currentWorkspace, "TASKS.txt");
+
+  // 1. Sync RESPONSE.md
+  const rootResp = safeReadFile(rootRespPath);
+  const sessResp = safeReadFile(sessRespPath);
+  if (rootResp) {
+    const rootSections = rootResp.split(/(?=### 阶段汇报)/).map(s => s.trim()).filter(Boolean);
+    const sessSections = sessResp.split(/(?=### 阶段汇报)/).map(s => s.trim()).filter(Boolean);
+
+    let startIdx = -1;
+    if (sessSections.length > 0) {
+      const firstSessSec = sessSections[0];
+      startIdx = rootSections.findIndex(s => s === firstSessSec || s.includes(firstSessSec.slice(0, 50)));
+    }
+    if (startIdx !== -1) {
+      const targetSections = rootSections.slice(startIdx);
+      if (targetSections.length > sessSections.length) {
+        safeWriteFile(sessRespPath, targetSections.join("\n\n") + "\n");
+      }
+    } else if (sessSections.length === 0 && rootSections.length > 0) {
+      safeWriteFile(sessRespPath, rootSections[rootSections.length - 1] + "\n");
+    }
+  }
+
+  // 2. Sync TASKS.txt
+  const rootTasksRaw = safeReadFile(rootTasksPath);
+  const sessTasksRaw = safeReadFile(sessTasksPath);
+  const rootTasks = rootTasksRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const sessTasks = sessTasksRaw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  if (rootTasks.length === 0 && sessTasks.length > 0) {
+    safeWriteFile(sessTasksPath, "");
+  } else if (rootTasks.length < sessTasks.length) {
+    safeWriteFile(sessTasksPath, rootTasks.join("\n") + (rootTasks.length > 0 ? "\n" : ""));
+  }
+}
+
 const sseClients = new Set();
 
 function broadcastUpdate(targetSessionId = null) {
+  const currentActive = targetSessionId ? setActiveSessionId(targetSessionId) : getActiveSessionId();
+  syncWorkspaceToSession(currentActive);
   const sessions = listSessions();
   for (const client of sseClients) {
     try {
-      const sessId = client._targetSessionId || targetSessionId || "default";
+      const sessId = client._targetSessionId || currentActive;
       const data = JSON.stringify({
         workspace: currentWorkspace,
         activeSessionId: sessId,
@@ -194,8 +255,10 @@ function setupWatcher() {
       if (filename.includes("TASKS.txt") || filename.includes("RESPONSE.md") || filename.includes("meta.json")) {
         clearTimeout(watchDebounce);
         watchDebounce = setTimeout(() => {
-          broadcastUpdate();
-        }, 120);
+          const currentActive = getActiveSessionId();
+          syncWorkspaceToSession(currentActive);
+          broadcastUpdate(currentActive);
+        }, 80);
       }
     });
   } catch (e) {
@@ -221,6 +284,10 @@ const server = http.createServer((req, res) => {
   // SSE stream
   if (url.pathname === "/api/events") {
     const querySession = sanitizeSessionId(url.searchParams.get("session_id"));
+    if (querySession && querySession !== "default") {
+      setActiveSessionId(querySession);
+    }
+    syncWorkspaceToSession(querySession);
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -242,6 +309,27 @@ const server = http.createServer((req, res) => {
 
     req.on("close", () => {
       sseClients.delete(res);
+    });
+    return;
+  }
+
+  // Switch active session
+  if (url.pathname === "/api/sessions/switch" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      try {
+        const { session_id } = JSON.parse(body || "{}");
+        const safeId = sanitizeSessionId(session_id);
+        setActiveSessionId(safeId);
+        syncWorkspaceToSession(safeId);
+        broadcastUpdate(safeId);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, activeSessionId: safeId, tasks: readSessionTasks(safeId), response: readSessionResponse(safeId) }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
     });
     return;
   }
@@ -345,6 +433,10 @@ const server = http.createServer((req, res) => {
   // Get current state
   if (url.pathname === "/api/info" && req.method === "GET") {
     const sId = sanitizeSessionId(url.searchParams.get("session_id"));
+    if (sId && sId !== "default") {
+      setActiveSessionId(sId);
+    }
+    syncWorkspaceToSession(sId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       workspace: currentWorkspace,
@@ -379,10 +471,8 @@ const server = http.createServer((req, res) => {
           }
           saveSessionMeta(sId, meta);
 
-          // Backward-compat dual-write for legacy default workspace root
-          if (sId === "default") {
-            safeAppendFile(path.join(currentWorkspace, "TASKS.txt"), singleLineTask + "\n");
-          }
+          // Dual-write to root workspace TASKS.txt so any running bridge instance picks it up
+          safeAppendFile(path.join(currentWorkspace, "TASKS.txt"), singleLineTask + "\n");
 
           broadcastUpdate(sId);
         }
@@ -406,9 +496,7 @@ const server = http.createServer((req, res) => {
         const sId = sanitizeSessionId(session_id);
         const p = path.join(getSessionDir(sId), "TASKS.txt");
         safeWriteFile(p, "");
-        if (sId === "default") {
-          safeWriteFile(path.join(currentWorkspace, "TASKS.txt"), "");
-        }
+        safeWriteFile(path.join(currentWorkspace, "TASKS.txt"), "");
         broadcastUpdate(sId);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true }));
@@ -436,6 +524,47 @@ const server = http.createServer((req, res) => {
         broadcastUpdate(sId);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Upload image (Supports base64 clipboard paste and file pick)
+  if (url.pathname === "/api/upload-image" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      try {
+        const { image, session_id, filename } = JSON.parse(body || "{}");
+        if (!image || typeof image !== "string") throw new Error("Image data is required");
+        const sId = sanitizeSessionId(session_id);
+        const match = image.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+        if (!match) throw new Error("Invalid base64 image data");
+        let ext = match[1].toLowerCase();
+        if (ext === "jpeg") ext = "jpg";
+        if (!["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)) ext = "png";
+        const buffer = Buffer.from(match[2], "base64");
+
+        const sessionDir = getSessionDir(sId);
+        const imgDir = path.join(sessionDir, "images");
+        if (!fs.existsSync(imgDir)) fs.mkdirSync(imgDir, { recursive: true });
+
+        const safeBaseName = filename ? path.basename(filename, path.extname(filename)).replace(/[^a-zA-Z0-9_-]/g, "_") : "img";
+        const targetFilename = `${safeBaseName}_${Date.now()}.${ext}`;
+        const targetPath = path.join(imgDir, targetFilename);
+
+        fs.writeFileSync(targetPath, buffer);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          success: true,
+          path: targetPath,
+          filename: targetFilename,
+          size: buffer.length,
+        }));
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));

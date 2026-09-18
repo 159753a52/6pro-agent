@@ -295,14 +295,18 @@
     <div class="absolute bottom-0 left-0 right-0 pointer-events-none flex justify-center px-4 pb-5 pt-10 bg-gradient-to-t from-white via-white/80 to-transparent z-20">
       <div class="pointer-events-auto w-full max-w-[780px] bg-white border border-zinc-200/90 rounded-[24px] shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_3px_rgba(0,0,0,0.03)] px-4 py-2.5 flex flex-col gap-1.5 transition-all duration-150 focus-within:border-zinc-350 focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.08)]">
         
+        <!-- Image Preview Area -->
+        <div id="imagePreviewArea" class="hidden flex items-center gap-2 pb-1.5 flex-wrap"></div>
+
         <!-- Textarea (随心输入) -->
-        <textarea id="taskInput" rows="2" placeholder="随心输入新任务或向 6Pro 补充指令... (按 Enter 加入队列并发送，Shift+Enter 换行)" class="w-full bg-transparent border-none p-0 text-[14.5px] text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-0 resize-none leading-relaxed min-h-[42px] max-h-36"></textarea>
+        <textarea id="taskInput" rows="2" placeholder="随心输入新任务或向 6Pro 补充指令... (支持 Ctrl+V 粘贴图片，按 Enter 发送)" class="w-full bg-transparent border-none p-0 text-[14.5px] text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-0 resize-none leading-relaxed min-h-[42px] max-h-36"></textarea>
 
         <!-- Bottom Row Inside Pill: Left Tools & Badges, Right Model & Send/Stop Button -->
         <div class="flex items-center justify-between pt-1 select-none">
           <!-- Left: + Button and Status Pill -->
           <div class="flex items-center gap-2">
-            <button id="btnAttach" class="w-7 h-7 rounded-full text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 flex items-center justify-center transition" title="添加附件或工具">
+            <input type="file" id="imageFileInput" accept="image/*" class="hidden" />
+            <button id="btnAttach" class="w-7 h-7 rounded-full text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 flex items-center justify-center transition" title="上传本地图片">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 4v16m8-8H4" />
               </svg>
@@ -398,28 +402,28 @@
         const stageMatch = line.match(/^###\s*阶段汇报\s*\[?([0-9:]*)\]?/);
         if (stageMatch) {
           const time = stageMatch[1] || "";
-          processedLines.push(`<div class="codex-stage-divider"><svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><span>阶段汇报 ${time}</span></div>`);
+          processedLines.push(`\n\n<div class="codex-stage-divider"><svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg><span>阶段汇报 ${time}</span></div>\n\n`);
           continue;
         }
 
         // 2. Command execution: 已运行 Get-Content...
         if (line.startsWith("已运行 ")) {
           const cmd = line.substring(4);
-          processedLines.push(`<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m7 10 3 2-3 2M13 14h4"/></svg><span>已运行 <code>${escapeHtml(cmd)}</code></span></div>`);
+          processedLines.push(`\n<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m7 10 3 2-3 2M13 14h4"/></svg><span>已运行 <code>${escapeHtml(cmd)}</code></span></div>\n`);
           continue;
         }
 
         // 3. File read: 已读取 TASKS.txt
         if (line.startsWith("已读取 ")) {
           const file = line.substring(4);
-          processedLines.push(`<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg><span>已读取 <code>${escapeHtml(file)}</code></span></div>`);
+          processedLines.push(`\n<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8M16 17H8M10 9H8"/></svg><span>已读取 <code>${escapeHtml(file)}</code></span></div>\n`);
           continue;
         }
 
         // 4. Web search: 已搜索 ...
         if (line.startsWith("已搜索 ")) {
           const query = line.substring(4);
-          processedLines.push(`<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20M2 12h20"/></svg><span>已搜索 ${escapeHtml(query)}</span></div>`);
+          processedLines.push(`\n<div class="codex-action-row"><svg class="w-4 h-4 text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20M2 12h20"/></svg><span>已搜索 ${escapeHtml(query)}</span></div>\n`);
           continue;
         }
 
@@ -511,6 +515,11 @@
       localStorage.setItem("6pro_active_session", sessId);
       connectSSE(sessId);
       try {
+        await fetch("/api/sessions/switch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessId }),
+        });
         const res = await fetch(`/api/info?session_id=${encodeURIComponent(sessId)}`);
         const data = await res.json();
         updateUI(data);
@@ -660,6 +669,93 @@
       }
     });
 
+    // Image upload & clipboard paste handling
+    const elImageFileInput = document.getElementById("imageFileInput");
+    const elImagePreviewArea = document.getElementById("imagePreviewArea");
+    const btnAttach = document.getElementById("btnAttach");
+
+    btnAttach.addEventListener("click", () => {
+      elImageFileInput.click();
+    });
+
+    elImageFileInput.addEventListener("change", (e) => {
+      if (e.target.files && e.target.files[0]) {
+        uploadAndAttachImage(e.target.files[0]);
+        elImageFileInput.value = "";
+      }
+    });
+
+    // Window-level Paste event listener for screenshots / images
+    window.addEventListener("paste", (e) => {
+      const items = (e.clipboardData || window.clipboardData)?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            uploadAndAttachImage(file);
+            break;
+          }
+        }
+      }
+    });
+
+    async function uploadAndAttachImage(file) {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = reader.result;
+        const tempId = "img_" + Date.now();
+        elImagePreviewArea.classList.remove("hidden");
+        const badge = document.createElement("div");
+        badge.id = tempId;
+        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-100 border border-zinc-200 text-xs text-zinc-700 animate-pulse";
+        badge.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-amber-500 animate-ping"></span><span>正在保存图片...</span>`;
+        elImagePreviewArea.appendChild(badge);
+
+        try {
+          const res = await fetch("/api/upload-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              image: base64,
+              session_id: activeSessionId,
+              filename: file.name || "pasted_image.png"
+            })
+          });
+          const data = await res.json();
+          if (data.success && data.path) {
+            badge.className = "flex items-center gap-2 px-2.5 py-1 rounded-lg bg-zinc-50 border border-zinc-200 text-xs text-zinc-700 shadow-sm";
+            badge.innerHTML = `
+              <img src="${base64}" class="w-5 h-5 rounded object-cover border border-zinc-300" />
+              <span class="font-mono text-[11px] text-zinc-600 truncate max-w-[180px]">${data.filename}</span>
+              <button class="text-zinc-400 hover:text-rose-600 font-bold ml-1" title="移除图片">&times;</button>
+            `;
+            badge.querySelector("button").onclick = () => {
+              badge.remove();
+              if (!elImagePreviewArea.children.length) elImagePreviewArea.classList.add("hidden");
+              elInput.value = elInput.value.replace(`【图片: ${data.path}】`, "").trim();
+            };
+
+            const tag = `【图片: ${data.path}】`;
+            if (!elInput.value.includes(data.path)) {
+              elInput.value = (tag + " " + elInput.value).trim();
+              elInput.focus();
+            }
+          } else {
+            badge.remove();
+            if (!elImagePreviewArea.children.length) elImagePreviewArea.classList.add("hidden");
+            alert("图片上传失败: " + (data.error || "未知错误"));
+          }
+        } catch (err) {
+          badge.remove();
+          if (!elImagePreviewArea.children.length) elImagePreviewArea.classList.add("hidden");
+          alert("图片处理失败: " + err.message);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+
     // Change workspace
     async function changeWorkspacePrompt() {
       const target = prompt("输入工作区文件夹绝对路径：", elWorkspace.textContent);
@@ -676,7 +772,7 @@
 
     // Copy Prompt (Session tailored)
     btnCopyPrompt.addEventListener("click", () => {
-      const promptText = `请开始执行本地会话 [${activeSessionId}] 的工作区任务。完成每个阶段后调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 汇报进展并获取下一项，直到所有任务全部完成再交付。`;
+      const promptText = `请开始执行本地会话 [${activeSessionId}] 的任务。请优先读取工作区 TASKS.txt 领取任务，按阶段执行并在 RESPONSE.md 写入以 "### 阶段汇报 [时间]" 开头的详细成果报告与数据表格，每完成一个阶段继续读取 TASKS.txt 处理下一项任务，持续保持轮询等待用户新任务，不要终结本轮。`;
       navigator.clipboard.writeText(promptText).then(() => {
         const orig = btnCopyPrompt.innerHTML;
         btnCopyPrompt.innerHTML = "<span>✅ 已复制</span>";
