@@ -192,33 +192,22 @@
       </div>
 
       <div class="flex items-center gap-0.5 text-zinc-500">
-        <button id="btnSearchTasks" class="p-1.5 rounded-md hover:bg-zinc-200/60 hover:text-zinc-800 transition" title="搜索">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-        </button>
-        <button id="btnNewTurn" class="p-1.5 rounded-md hover:bg-zinc-200/60 hover:text-zinc-800 transition" title="新对话 / 清空">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-        </button>
       </div>
     </div>
 
-    <!-- Quick Navigation Shortcuts (Codex Desktop Style) -->
-    <div class="px-2 py-1 space-y-0.5 text-[13px] text-zinc-600 font-normal">
-      <div id="btnNewDraftChat" class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md hover:bg-zinc-200/50 cursor-pointer transition font-medium text-zinc-800">
-        <svg class="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+    <!-- Single Clear New Session Button -->
+    <div class="px-3 py-2">
+      <button id="btnNewDraftChat" class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-black text-white text-[13px] font-medium transition shadow-sm select-none" title="创建并切换到一个全新的会话">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M12 4v16m8-8H4" />
         </svg>
-        <span>新对话</span>
-      </div>
+        <span>新建会话</span>
+      </button>
     </div>
 
     <!-- Section: Recents / Sessions List -->
     <div class="px-3 pt-2 pb-1 flex items-center justify-between text-[11px] font-medium text-zinc-400 select-none">
-      <span class="tracking-wide">历史会话</span>
-      <button id="btnCreateSession" class="hover:text-zinc-700 transition font-normal" title="新建命名会话">+ 新建</button>
+      <span class="tracking-wide">会话列表</span>
     </div>
     <div id="sessionList" class="max-h-48 overflow-y-auto px-2 py-0.5 space-y-0.5 text-xs">
       <!-- Dynamic session items injected here -->
@@ -479,6 +468,10 @@
         activeTitle.textContent = currentMeta ? currentMeta.name : (activeSessionId === "default" ? "默认会话" : activeSessionId);
       }
 
+      // Update copy button text
+      const sName = currentMeta ? currentMeta.name : (activeSessionId === "default" ? "默认会话" : activeSessionId);
+      btnCopyPrompt.innerHTML = `<span>📋 复制【${escapeHtml(sName.slice(0, 10))}】启动词</span>`;
+
       // Render tasks in left sidebar
       const tasks = data.tasks || [];
       elTaskBadge.textContent = tasks.length;
@@ -527,17 +520,20 @@
       if (sessionBus) sessionBus.postMessage({ type: "SESSION_SWITCHED", sessionId: sessId });
     };
 
-    // Start draft for new session (Codex Desktop lazy creation model)
-    function startDraftNewSession() {
-      isDraftNewSession = true;
-      elActiveSessionBadge.textContent = "新建中";
-      elActiveSessionBadge.className = "text-[11px] font-mono px-2 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-200 shrink-0 select-none";
-      activeTitle.textContent = "新对话 (输入第一条任务即自举创建)";
-      elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-6 text-[12px]">输入新任务即可创建会话</div>';
-      elTaskBadge.textContent = "0";
-      elResponse.innerHTML = '<div class="text-zinc-400 italic text-center py-20 text-sm">新对话准备就绪。在下方输入任务并发送，将自动生成会话并开始执行。</div>';
-      renderSessions(currentSessionsCache);
-      elInput.focus();
+    // Create and select new session immediately
+    async function createAndSelectNewSession() {
+      const newId = `sess_${Date.now().toString(36)}`;
+      try {
+        await fetch("/api/sessions/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: newId, name: "新会话" }),
+        });
+        await selectSession(newId);
+        elInput.focus();
+      } catch (err) {
+        alert("创建新会话失败: " + err.message);
+      }
     }
 
     window.renameSessionPrompt = async function(id, oldName) {
@@ -581,6 +577,11 @@
       };
     }
     connectSSE(activeSessionId);
+    fetch("/api/sessions/switch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: activeSessionId }),
+    }).catch(() => {});
 
     // Send task
     async function submitTask() {
@@ -589,28 +590,10 @@
       elInput.value = "";
       elInput.style.height = "auto";
 
-      let targetSess = activeSessionId;
-      if (isDraftNewSession) {
-        const newId = `sess_${Date.now().toString(36)}`;
-        const newName = text.slice(0, 24);
-        try {
-          await fetch("/api/sessions/create", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: newId, name: newName }),
-          });
-          targetSess = newId;
-          activeSessionId = newId;
-          isDraftNewSession = false;
-          localStorage.setItem("6pro_active_session", newId);
-          connectSSE(newId);
-        } catch {}
-      }
-
       await fetch("/api/add-task", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: text, session_id: targetSess }),
+        body: JSON.stringify({ task: text, session_id: activeSessionId }),
       });
     }
 
@@ -622,21 +605,7 @@
       }
     });
 
-    btnNewDraftChat.addEventListener("click", startDraftNewSession);
-    btnNewTurn.addEventListener("click", startDraftNewSession);
-
-    btnCreateSession.addEventListener("click", async () => {
-      const name = prompt("请输入新会话名称：", "新对话");
-      if (name && name.trim()) {
-        const newId = `sess_${Date.now().toString(36)}`;
-        await fetch("/api/sessions/create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: newId, name: name.trim() }),
-        });
-        selectSession(newId);
-      }
-    });
+    btnNewDraftChat.addEventListener("click", createAndSelectNewSession);
 
     // Clear buttons
     btnClearTasks.addEventListener("click", async () => {
@@ -773,20 +742,25 @@
     // Copy Prompt (Session tailored)
     btnCopyPrompt.addEventListener("click", () => {
       const currentMeta = (currentSessionsCache || []).find(s => s.id === activeSessionId);
-      const sessionName = currentMeta ? currentMeta.name : activeSessionId;
+      const sessionName = currentMeta ? currentMeta.name : (activeSessionId === "default" ? "默认会话" : activeSessionId);
       const promptText = `你当前已绑定本地会话【${sessionName}】（Session ID: ${activeSessionId}）。\n` +
         `专属工作区会话目录：sessions/${activeSessionId}/\n\n` +
-        `【工作流与通信协议】\n` +
-        `1. 任务领取与汇报：必须通过 MCP 工具 codex_fetch_next_task 与本地通信。每次调用必须显式传入参数 session_id="${activeSessionId}"。\n` +
-        `2. 阶段汇报要求：每完成一项任务，把完整成果报告填入 step_summary，并调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 提交汇报并领取下一项任务。\n` +
-        `3. 轮询静默等待：如果返回的 next_task 是 '__POLL__'，表示用户暂无新指令，严禁向用户输出任何文本或结束语，必须立刻再次调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="__POLL__") 保持静默轮询。\n` +
-        `4. 严禁终结本轮：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才调用 codex_turn_complete 终结本轮。\n` +
-        `5. 会话隔离安全：严禁读取或写入根目录下的 TASKS.txt 或 RESPONSE.md，所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
+        `【工作流与心跳保活协议】\n` +
+        `1. 任务领取与心跳保活：必须通过 MCP 工具 codex_fetch_next_task 与本地通信。\n` +
+        `   - 调用参数：传入 session_id="${activeSessionId}"（若你本地工具列表未声明 session_id 参数，请直接调用，无需传参，本地会自动关联此会话）。\n` +
+        `   - 示例：codex_fetch_next_task(session_id="${activeSessionId}", step_summary="会话已建立，开始等待任务")。\n` +
+        `2. 保持会话常驻轮询（关键禁令）：\n` +
+        `   - 如果返回的 next_task 是 '__POLL__'，说明用户暂无新指令、正在本地编辑任务。\n` +
+        `   - 【硬性要求】：严禁向用户输出任何解释文字或结束语，必须立刻再次调用 codex_fetch_next_task 保持静默等待。\n` +
+        `   - 只要 has_next 为 true，绝对严禁结束对话，必须依靠循环调用工具保持心跳保活常驻！\n` +
+        `3. 阶段汇报要求：拿到真实任务后全力执行；每完成一项任务，把完整成果报告填入 step_summary，并调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="...") 提交汇报并领取下一项任务。\n` +
+        `4. 终结退出通道：只有当 codex_fetch_next_task 返回 has_next=false（用户显式输入 /exit）时，才做最终汇报并结束本轮（若存在 codex_turn_complete 则调用，无则直接输出最终结论）。\n` +
+        `5. 会话隔离安全：所有临时执行脚本、日志与测试请在 work/${activeSessionId}/ 或对应工程工作区下进行。\n\n` +
         `现在请立即调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="会话已建立，开始等待任务") 领取第一个任务！`;
       navigator.clipboard.writeText(promptText).then(() => {
         const orig = btnCopyPrompt.innerHTML;
-        btnCopyPrompt.innerHTML = "<span>✅ 已复制会话专属提示词</span>";
-        setTimeout(() => btnCopyPrompt.innerHTML = orig, 1800);
+        btnCopyPrompt.innerHTML = `<span>✅ 已复制【${escapeHtml(sessionName.slice(0, 10))}】启动词</span>`;
+        setTimeout(() => btnCopyPrompt.innerHTML = orig, 2500);
       });
     });
 

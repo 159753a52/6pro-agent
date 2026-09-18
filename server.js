@@ -415,6 +415,7 @@ const server = http.createServer((req, res) => {
             meta.name = singleLineTask.slice(0, 24);
           }
           saveSessionMeta(sId, meta);
+          setActiveSessionId(sId);
 
           broadcastUpdate();
         }
