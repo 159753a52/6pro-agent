@@ -136,6 +136,7 @@ function listSessions() {
     if (entry.name.endsWith(".tombstone") || entry.name.startsWith(".")) continue;
     const sId = entry.name;
     const meta = getSessionMeta(sId);
+    if (meta.deleted) continue;
     const tasks = readSessionTasks(sId);
     result.push({
       id: sId,
@@ -252,46 +253,24 @@ function getBrowserStatus() {
 
 function getAgentStatus(tasksCount = 0, sessionId = "default") {
   try {
-    const browser = getBrowserStatus();
+    const sessionDir = getSessionDir(sessionId);
+    const heartbeatPath = path.join(sessionDir, ".heartbeat");
+    const activeTaskPath = path.join(sessionDir, ".active_task");
+    const now = Date.now();
 
-    let lastMcp = null;
-    let lastTime = null;
-    let stat = null;
-    if (fs.existsSync(LOG_PATH)) {
-      stat = fs.statSync(LOG_PATH);
-      const readSize = Math.min(stat.size, 16384);
-      const fd = fs.openSync(LOG_PATH, "r");
-      const buffer = Buffer.alloc(readSize);
-      fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
-      fs.closeSync(fd);
-
-      const logText = buffer.toString("utf8");
-      const lines = logText.trim().split("\n").filter(Boolean);
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i];
-        if (line.includes("[chatgpt-web-mcp]") && !lastMcp) {
-          try {
-            const jsonStr = line.substring(line.indexOf("{"));
-            lastMcp = JSON.parse(jsonStr);
-          } catch {}
-        }
-        if (line.includes("\"time\":\"") && !lastTime) {
-          try {
-            const tm = line.match(/"time":"([^"]+)"/);
-            if (tm) lastTime = new Date(tm[1]).getTime();
-          } catch {}
-        }
-        if (lastMcp && lastTime) break;
-      }
+    let heartbeatTime = 0;
+    if (fs.existsSync(heartbeatPath)) {
+      const hbStr = safeReadFile(heartbeatPath).trim();
+      heartbeatTime = parseInt(hbStr, 10) || (fs.statSync(heartbeatPath).mtimeMs);
     }
 
-    const now = Date.now();
-    const ageSec = lastTime ? (now - lastTime) / 1000 : (stat ? (now - stat.mtimeMs) / 1000 : 999);
+    // Check if this session has an active task being executed
+    const hasActiveTask = fs.existsSync(activeTaskPath) && safeReadFile(activeTaskPath).trim().length > 0;
 
     // Check session age if meta.json exists
     let sessionAgeMin = 0;
     try {
-      const metaPath = path.join(getSessionDir(sessionId), "meta.json");
+      const metaPath = path.join(sessionDir, "meta.json");
       if (fs.existsSync(metaPath)) {
         const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
         if (meta.createdAt) {
@@ -300,10 +279,22 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       }
     } catch {}
 
-    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${sessionId}", step_summary="续接执行任务") 领取待办任务并继续执行。\n【工作流原则】：严禁微观碎步频繁打卡！请在后台自主端到端闭环推进完整任务流程，中间过程静默执行，仅在取得明确的阶段性交付成果或最终结论时再统一汇报！`;
+    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。\n【1小时额度复用长连接铁律】：即使没有待办任务，也必须保持挂起常驻！严禁向用户输出任何文字、结束语或总结，严禁停笔交卷！\n请立即调用 MCP 工具 codex_fetch_next_task(step_summary="续接执行任务【${sessionId}】") 领取任务或进入常驻挂起监听。\n【工作流原则】：后台静默端到端执行；中间微观探查不打卡，只在取得实质阶段性成果或里程碑时写入 step_summary 汇报；若暂无新任务，必须立即循环调用 codex_fetch_next_task 保持长连接挂起！`;
 
-    // Case 1: 1-hour timeout (session ran >= 50m AND no heartbeat for > 90s)
-    if (sessionAgeMin >= 50 && ageSec > 90) {
+    // Case 0: If this session has NEVER received a heartbeat, it's NOT connected yet!
+    if (!heartbeatTime) {
+      return {
+        state: "offline",
+        label: "6Pro 待启动 / 未连接",
+        detail: "请点击右上角【复制启动词】并在 ChatGPT 网页端发送以激活此会话",
+      };
+    }
+
+    const hbAgeSec = (now - heartbeatTime) / 1000;
+    const isSessionActive = hbAgeSec < 45;
+
+    // Case 1: 1-hour timeout
+    if (sessionAgeMin >= 50 && hbAgeSec > 90) {
       return {
         state: "timeout_1h",
         label: "⚠️ 1小时限时已达 · 待续接",
@@ -313,55 +304,49 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
         resumePrompt,
         sessionId,
         tasksCount,
-        lastActive: new Date(lastTime || (stat ? stat.mtimeMs : now)).toLocaleTimeString("zh-CN", { hour12: false })
+        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
       };
     }
 
-    // Case 2: Browser has stopped generating (turn ended)
-    if (!browser.isGenerating) {
-      if (tasksCount > 0) {
+    // Case 2: Session is actively connected to 6Pro (< 45s heartbeat)
+    if (isSessionActive) {
+      if (hasActiveTask) {
         return {
-          state: "waiting_resume",
-          label: "⚠️ 网页端已停笔 · 待发指令接力",
-          title: "检测到模型在网页端已停止生成（待命接力）",
-          tag: "Turn Ended",
-          detail: `模型在 ChatGPT 网页端上一轮生成已停笔，待办队列中有 ${tasksCount} 项任务尚未领取。请在 ChatGPT 网页端直接发送“继续”接力！`,
-          resumePrompt,
-          sessionId,
-          tasksCount,
-          lastActive: new Date(lastTime || (stat ? stat.mtimeMs : now)).toLocaleTimeString("zh-CN", { hour12: false })
+          state: "running",
+          label: "6Pro 正在执行任务...",
+          detail: "模型正在处理待办任务并准备汇报...",
+          lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
         };
-      }
-      if (ageSec > 180) {
-        return { state: "offline", label: "6Pro 待连接 / 离线", detail: "网页端已停笔且暂无新待办任务" };
       }
       return {
         state: "waiting",
-        label: "6Pro 在线待命",
-        detail: "网页端生成已结束，随时可下发新任务",
-        lastActive: new Date(lastTime || (stat ? stat.mtimeMs : now)).toLocaleTimeString("zh-CN", { hour12: false })
+        label: "6Pro 在线常驻中 · 等待任务",
+        detail: "长连接心跳保活中，随时下发新任务将在 500ms 内执行",
+        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
       };
     }
 
-    // Case 3: Browser is actively generating in ChatGPT Web
-    if (browser.isGenerating) {
-      if (lastMcp && lastMcp.tool === "codex_exec" && ageSec < 60) {
-        return {
-          state: "running",
-          label: "6Pro 执行远端命令中...",
-          detail: "模型正在调用本地工具或在远端 ECS 执行任务...",
-          lastActive: new Date(lastTime || now).toLocaleTimeString("zh-CN", { hour12: false })
-        };
-      }
+    // Case 3: Heartbeat expired (> 45s)
+    if (tasksCount > 0) {
       return {
-        state: "running",
-        label: "6Pro 深度思考中...",
-        detail: "网页端正在实时推理与数据分析中（心跳正常，请稍候）...",
-        lastActive: new Date(lastTime || now).toLocaleTimeString("zh-CN", { hour12: false })
+        state: "waiting_resume",
+        label: "⚠️ 网页端已停笔 · 待发指令接力",
+        title: "检测到模型在网页端已停止生成（待命接力）",
+        tag: "Turn Ended",
+        detail: `模型在上一轮已停笔，队列中有 ${tasksCount} 项任务尚未领取。请在网页端发送“继续”接力！`,
+        resumePrompt,
+        sessionId,
+        tasksCount,
+        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
       };
     }
 
-    return { state: "waiting", label: "6Pro 在线待命", detail: "连接正常" };
+    return {
+      state: "offline",
+      label: "6Pro 已停笔 / 待命",
+      detail: "上一轮推导已结束，暂无待办任务",
+      lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
+    };
   } catch (e) {
     return { state: "unknown", label: "状态检测中", detail: e.message };
   }
@@ -447,18 +432,26 @@ const server = http.createServer((req, res) => {
     res._targetSessionId = querySession;
     sseClients.add(res);
 
+    res.on("error", () => {
+      sseClients.delete(res);
+    });
+
     // Initial state
     const sessions = listSessions();
     const queryTasks = readSessionTasks(querySession);
-    res.write(`data: ${JSON.stringify({
-      workspace: currentWorkspace,
-      activeSessionId: querySession,
-      sessions,
-      tasks: queryTasks,
-      response: readSessionResponse(querySession),
-      agentStatus: getAgentStatus(queryTasks.length, querySession),
-      epoch: Date.now(),
-    })}\n\n`);
+    try {
+      res.write(`data: ${JSON.stringify({
+        workspace: currentWorkspace,
+        activeSessionId: querySession,
+        sessions,
+        tasks: queryTasks,
+        response: readSessionResponse(querySession),
+        agentStatus: getAgentStatus(queryTasks.length, querySession),
+        epoch: Date.now(),
+      })}\n\n`);
+    } catch {
+      sseClients.delete(res);
+    }
 
     req.on("close", () => {
       sseClients.delete(res);
@@ -560,15 +553,25 @@ const server = http.createServer((req, res) => {
         } else {
           const dir = path.join(getSessionsDir(), safeId);
           if (fs.existsSync(dir)) {
-            const tombstonePath = path.join(getSessionsDir(), `${safeId}_${Date.now()}.tombstone`);
+            // First mark deleted in meta so listSessions immediately ignores it
+            const meta = getSessionMeta(safeId);
+            meta.deleted = true;
+            saveSessionMeta(safeId, meta);
+
+            // Attempt physical cleanup
             try {
-              fs.renameSync(dir, tombstonePath);
+              fs.rmSync(dir, { recursive: true, force: true });
             } catch {
-              // Fallback: mark in meta if locked
-              const meta = getSessionMeta(safeId);
-              meta.deleted = true;
-              saveSessionMeta(safeId, meta);
+              try {
+                const tombstonePath = path.join(getSessionsDir(), `${safeId}_${Date.now()}.tombstone`);
+                fs.renameSync(dir, tombstonePath);
+              } catch {}
             }
+          }
+          if (getActiveSessionId() === safeId) {
+            const remaining = listSessions();
+            const nextId = remaining.length > 0 ? remaining[0].id : "default";
+            setActiveSessionId(nextId);
           }
         }
         broadcastUpdate();
@@ -579,6 +582,36 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: e.message }));
       }
     });
+    return;
+  }
+
+  // Clean empty sessions (bulk remove untitled sessions with no tasks and no responses)
+  if (url.pathname === "/api/sessions/clean-empty" && req.method === "POST") {
+    try {
+      const sessions = listSessions();
+      for (const s of sessions) {
+        if (s.id !== "default" && s.taskCount === 0) {
+          const resp = readSessionResponse(s.id);
+          if (!resp || !resp.trim()) {
+            const dir = path.join(getSessionsDir(), s.id);
+            const meta = getSessionMeta(s.id);
+            meta.deleted = true;
+            saveSessionMeta(s.id, meta);
+            try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+          }
+        }
+      }
+      if (getActiveSessionId() && !listSessions().some(s => s.id === getActiveSessionId())) {
+        const remaining = listSessions();
+        setActiveSessionId(remaining.length > 0 ? remaining[0].id : "default");
+      }
+      broadcastUpdate();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, sessions: listSessions() }));
+    } catch (e) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 
@@ -766,6 +799,22 @@ const server = http.createServer((req, res) => {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not Found");
   }
+});
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`Port ${PORT} is already in use. Please terminate the conflicting process.`);
+  } else {
+    console.error("Server error:", err);
+  }
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (prevented crash):", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection (prevented crash):", reason);
 });
 
 server.listen(PORT, "127.0.0.1", () => {

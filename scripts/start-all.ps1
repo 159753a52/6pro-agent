@@ -1,4 +1,4 @@
-﻿# 6pro 任务服务一键启动脚本
+# 6pro 任务服务一键启动脚本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 | Out-Null
@@ -8,7 +8,7 @@ Write-Host "        6Pro & ChatGPT Web 一键启动服务检查          " -Fore
 Write-Host "====================================================" -ForegroundColor Cyan
 
 $bunExe = "C:\Users\13914\.codex-chatgpt-web\versions\5.0.8-win32-x64\runtime\bun.exe"
-$cliJs = "C:\Users\13914\.codex-chatgpt-web\versions\5.0.8-win32-x64\app\cli.js"
+$cliJs = "D:\Project\codex-chatgpt-web\dist\runtime\app\cli.js"
 $tunnelBin = "C:\Users\13914\.codex-chatgpt-web\bin\tunnel-client.exe"
 $tunnelProfiles = "C:\Users\13914\.codex-chatgpt-web\tunnel\profiles"
 $serverJs = "D:\Project\6pro-agent\server.js"
