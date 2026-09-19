@@ -281,6 +281,8 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
 
     const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。\n【1小时额度复用长连接铁律】：即使没有待办任务，也必须保持挂起常驻！严禁向用户输出任何文字、结束语或总结，严禁停笔交卷！\n请立即调用 MCP 工具 codex_fetch_next_task(step_summary="续接执行任务【${sessionId}】") 领取任务或进入常驻挂起监听。\n【工作流原则】：后台静默端到端执行；中间微观探查不打卡，只在取得实质阶段性成果或里程碑时写入 step_summary 汇报；若暂无新任务，必须立即循环调用 codex_fetch_next_task 保持长连接挂起！`;
 
+    const browser = getBrowserStatus();
+
     // Case 0: If this session has NEVER received a heartbeat, it's NOT connected yet!
     if (!heartbeatTime) {
       return {
@@ -293,8 +295,8 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
     const hbAgeSec = (now - heartbeatTime) / 1000;
     const isSessionActive = hbAgeSec < 45;
 
-    // Case 1: 1-hour timeout
-    if (sessionAgeMin >= 50 && hbAgeSec > 90) {
+    // Case 1: 1-hour timeout (session age >= 50m and not generating and heartbeat expired)
+    if (sessionAgeMin >= 50 && hbAgeSec > 90 && !browser.isGenerating) {
       return {
         state: "timeout_1h",
         label: "⚠️ 1小时限时已达 · 待续接",
@@ -308,16 +310,29 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       };
     }
 
-    // Case 2: Session is actively connected to 6Pro (< 45s heartbeat)
+    // Case 2: Actively executing a task
+    // Either heartbeat is fresh (< 45s), browser is generating, or active task is within reasonable execution window (< 10min)
+    if (hasActiveTask && (isSessionActive || browser.isGenerating || hbAgeSec < 600)) {
+      return {
+        state: "running",
+        label: "6Pro 正在执行任务...",
+        detail: `模型正在深度推理与执行命令中（已运行 ${Math.round(hbAgeSec)} 秒）...`,
+        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
+      };
+    }
+
+    // Case 3: Browser is actively generating (reasoning/thinking or executing tools)
+    if (browser.isGenerating) {
+      return {
+        state: "running",
+        label: "6Pro 深度思考 / 执行中...",
+        detail: "网页端正在实时推理与处理中（心跳正常）...",
+        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
+      };
+    }
+
+    // Case 4: Idle keep-alive hanging (< 45s heartbeat, no active task)
     if (isSessionActive) {
-      if (hasActiveTask) {
-        return {
-          state: "running",
-          label: "6Pro 正在执行任务...",
-          detail: "模型正在处理待办任务并准备汇报...",
-          lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-        };
-      }
       return {
         state: "waiting",
         label: "6Pro 在线常驻中 · 等待任务",
@@ -326,17 +341,17 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       };
     }
 
-    // Case 3: Heartbeat expired (> 45s)
-    if (tasksCount > 0) {
+    // Case 5: Heartbeat expired (> 45s) AND browser is NOT generating -> Actually stopped!
+    if (tasksCount > 0 || hasActiveTask) {
       return {
         state: "waiting_resume",
         label: "⚠️ 网页端已停笔 · 待发指令接力",
         title: "检测到模型在网页端已停止生成（待命接力）",
         tag: "Turn Ended",
-        detail: `模型在上一轮已停笔，队列中有 ${tasksCount} 项任务尚未领取。请在网页端发送“继续”接力！`,
+        detail: `模型在上一轮已停笔，队列中有 ${tasksCount + (hasActiveTask ? 1 : 0)} 项任务尚未完成。请在网页端发送“继续”接力！`,
         resumePrompt,
         sessionId,
-        tasksCount,
+        tasksCount: tasksCount + (hasActiveTask ? 1 : 0),
         lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
       };
     }
