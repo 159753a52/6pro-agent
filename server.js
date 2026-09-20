@@ -66,6 +66,32 @@ function sanitizeSessionId(id) {
   return clean.slice(0, 64);
 }
 
+// Task line format: "id|content". For backward compatibility, lines without "|" are treated as id-less.
+function makeTaskLine(taskText) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  return `${id}|${taskText.replace(/\|/g, "｜")}`;
+}
+
+function parseTaskLine(line) {
+  const sep = line.indexOf("|");
+  if (sep > 0 && /^[a-zA-Z0-9]+$/.test(line.slice(0, sep))) {
+    return { id: line.slice(0, sep), content: line.slice(sep + 1) };
+  }
+  return { id: "", content: line };
+}
+
+function serializeTaskLines(lines) {
+  return lines.join("\n") + (lines.length > 0 ? "\n" : "");
+}
+
+function getTaskContents(lines) {
+  return lines.map(l => parseTaskLine(l).content);
+}
+
+function getTaskIds(lines) {
+  return lines.map(l => parseTaskLine(l).id);
+}
+
 function getSessionDir(sessionId) {
   const safeId = sanitizeSessionId(sessionId);
   const dir = path.join(getSessionsDir(), safeId);
@@ -140,7 +166,7 @@ function listSessions() {
     const tasks = readSessionTasks(sId);
     result.push({
       id: sId,
-      name: meta.name || sId,
+      name: (meta.name && meta.name !== "新会话" && meta.name !== "新对话") ? meta.name : (sId === "default" ? "默认会话" : sId),
       createdAt: meta.createdAt || 0,
       updatedAt: meta.updatedAt || 0,
       taskCount: tasks.length,
@@ -159,7 +185,8 @@ function readSessionTasks(sessionId) {
   const dir = getSessionDir(sessionId);
   const p = path.join(dir, "TASKS.txt");
   const raw = safeReadFile(p);
-  const currentTasks = raw ? raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [];
+  const currentTaskLines = raw ? raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [];
+  const currentTasks = getTaskContents(currentTaskLines);
 
   if (!sessionTasksCache.has(sessionId)) {
     sessionTasksCache.set(sessionId, currentTasks);
@@ -192,6 +219,13 @@ function readSessionTasks(sessionId) {
   }
 
   return currentTasks;
+}
+
+function readSessionTaskIds(sessionId) {
+  const p = path.join(getSessionDir(sessionId), "TASKS.txt");
+  const raw = safeReadFile(p);
+  const lines = raw ? raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [];
+  return getTaskIds(lines);
 }
 
 function readSessionResponse(sessionId) {
@@ -267,21 +301,40 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
     // Check if this session has an active task being executed
     const hasActiveTask = fs.existsSync(activeTaskPath) && safeReadFile(activeTaskPath).trim().length > 0;
 
-    // Check session age if meta.json exists
+    // Check session age: use .turn_started (written by gateway at turn start) as the 1h timeout baseline;
+    // fall back to meta.createdAt for legacy sessions.
     let sessionAgeMin = 0;
     try {
-      const metaPath = path.join(sessionDir, "meta.json");
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-        if (meta.createdAt) {
-          sessionAgeMin = (now - meta.createdAt) / 60000;
+      const turnStartedPath = path.join(sessionDir, ".turn_started");
+      let turnStartMs = 0;
+      if (fs.existsSync(turnStartedPath)) {
+        turnStartMs = parseInt(safeReadFile(turnStartedPath).trim(), 10) || 0;
+      }
+      if (!turnStartMs) {
+        const metaPath = path.join(sessionDir, "meta.json");
+        if (fs.existsSync(metaPath)) {
+          const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+          if (meta.createdAt) turnStartMs = meta.createdAt;
         }
+      }
+      if (turnStartMs) {
+        sessionAgeMin = (now - turnStartMs) / 60000;
       }
     } catch {}
 
     const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。\n【1小时额度复用长连接铁律】：即使没有待办任务，也必须保持挂起常驻！严禁向用户输出任何文字、结束语或总结，严禁停笔交卷！\n请立即调用 MCP 工具 codex_fetch_next_task(step_summary="续接执行任务【${sessionId}】") 领取任务或进入常驻挂起监听。\n【工作流原则】：后台静默端到端执行；中间微观探查不打卡，只在取得实质阶段性成果或里程碑时写入 step_summary 汇报；若暂无新任务，必须立即循环调用 codex_fetch_next_task 保持长连接挂起！`;
 
     const browser = getBrowserStatus();
+
+    const stoppedPath = path.join(sessionDir, ".stopped");
+    if (fs.existsSync(stoppedPath)) {
+      return {
+        state: "offline",
+        label: "6Pro 已结束本轮 (/exit)",
+        detail: "本轮推导已由 /exit 优雅终结。如需发起新一轮，请点击右上角【复制启动词】在网页重新发送。",
+        lastActive: heartbeatTime ? new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false }) : ""
+      };
+    }
 
     // Case 0: If this session has NEVER received a heartbeat, it's NOT connected yet!
     if (!heartbeatTime) {
@@ -321,8 +374,18 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       };
     }
 
-    // Case 3: Browser is actively generating (reasoning/thinking or executing tools)
-    if (browser.isGenerating) {
+    // Case 3: Idle keep-alive hanging (session is active, no active task, task queue empty)
+    if (isSessionActive && !hasActiveTask && tasksCount === 0) {
+      return {
+        state: "waiting",
+        label: "6Pro 在线保活中 · 等待任务",
+        detail: "长连接心跳保活中，随时下发新任务将在 500ms 内执行",
+        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
+      };
+    }
+
+    // Case 4: Actively processing task or pending queue
+    if (browser.isGenerating && (hasActiveTask || tasksCount > 0)) {
       return {
         state: "running",
         label: "6Pro 深度思考 / 执行中...",
@@ -331,11 +394,11 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       };
     }
 
-    // Case 4: Idle keep-alive hanging (< 45s heartbeat, no active task)
+    // Case 4b: Fallback idle keep-alive if session heartbeat is fresh
     if (isSessionActive) {
       return {
         state: "waiting",
-        label: "6Pro 在线常驻中 · 等待任务",
+        label: "6Pro 在线保活中 · 等待任务",
         detail: "长连接心跳保活中，随时下发新任务将在 500ms 内执行",
         lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
       };
@@ -345,7 +408,7 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
     if (tasksCount > 0 || hasActiveTask) {
       return {
         state: "waiting_resume",
-        label: "⚠️ 网页端已停笔 · 待发指令接力",
+        label: "⚠️ 网页端已停止 · 待发指令接力",
         title: "检测到模型在网页端已停止生成（待命接力）",
         tag: "Turn Ended",
         detail: `模型在上一轮已停笔，队列中有 ${tasksCount + (hasActiveTask ? 1 : 0)} 项任务尚未完成。请在网页端发送“继续”接力！`,
@@ -357,9 +420,14 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
     }
 
     return {
-      state: "offline",
-      label: "6Pro 已停笔 / 待命",
-      detail: "上一轮推导已结束，暂无待办任务",
+      state: "turn_ended",
+      label: "● 网页端已停止生成 · 待命",
+      title: "检测到模型在网页端已停止生成",
+      tag: "Turn Ended",
+      detail: "模型在网页端上一轮推导已停止，当前暂无待办任务。在下方发送新任务，或在网页端发送指令即可唤醒！",
+      resumePrompt,
+      sessionId,
+      tasksCount: 0,
       lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
     };
   } catch (e) {
@@ -381,6 +449,7 @@ function broadcastUpdate() {
         activeSessionId: sessId,
         sessions,
         tasks,
+        taskIds: readSessionTaskIds(sessId),
         response: readSessionResponse(sessId),
         agentStatus: getAgentStatus(tasks.length, sessId),
         epoch: Date.now(),
@@ -391,10 +460,15 @@ function broadcastUpdate() {
 }
 
 // Single debounced watcher on Workspace directory (avoids Windows handle leaks)
+let workspaceWatcher = null;
 let watchDebounce = null;
 function setupWatcher() {
   try {
-    fs.watch(currentWorkspace, { recursive: true }, (eventType, filename) => {
+    if (workspaceWatcher) {
+      try { workspaceWatcher.close(); } catch {}
+      workspaceWatcher = null;
+    }
+    workspaceWatcher = fs.watch(currentWorkspace, { recursive: true }, (eventType, filename) => {
       if (!filename) return;
       if (filename.includes("TASKS.txt") || filename.includes("RESPONSE.md") || filename.includes("meta.json")) {
         clearTimeout(watchDebounce);
@@ -460,6 +534,7 @@ const server = http.createServer((req, res) => {
         activeSessionId: querySession,
         sessions,
         tasks: queryTasks,
+        taskIds: readSessionTaskIds(querySession),
         response: readSessionResponse(querySession),
         agentStatus: getAgentStatus(queryTasks.length, querySession),
         epoch: Date.now(),
@@ -512,7 +587,7 @@ const server = http.createServer((req, res) => {
         const sessionDir = getSessionDir(safeId);
         const meta = {
           id: safeId,
-          name: (name && name.trim()) ? name.trim().slice(0, 40) : (safeId === "default" ? "默认会话" : "新对话"),
+          name: (name && name.trim() && name.trim() !== "新会话" && name.trim() !== "新对话") ? name.trim().slice(0, 40) : (safeId === "default" ? "默认会话" : safeId),
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };
@@ -568,20 +643,39 @@ const server = http.createServer((req, res) => {
         } else {
           const dir = path.join(getSessionsDir(), safeId);
           if (fs.existsSync(dir)) {
-            // First mark deleted in meta so listSessions immediately ignores it
+            // Close watcher to release directory handles on Windows
+            if (workspaceWatcher) {
+              try { workspaceWatcher.close(); } catch {}
+              workspaceWatcher = null;
+            }
+
+            // Step 1: Write deleted flag into meta.json while dir still exists
             const meta = getSessionMeta(safeId);
             meta.deleted = true;
             saveSessionMeta(safeId, meta);
 
-            // Attempt physical cleanup
+            // Step 2: Empty the directory contents except meta.json
             try {
-              fs.rmSync(dir, { recursive: true, force: true });
+              for (const item of fs.readdirSync(dir)) {
+                if (item === "meta.json") continue;
+                fs.rmSync(path.join(dir, item), { recursive: true, force: true });
+              }
+            } catch {}
+
+            // Step 3: Remove the now-empty directory
+            try {
+              fs.rmdirSync(dir);
             } catch {
+              // Fallback: rename as tombstone
+              const tombstonePath = path.join(getSessionsDir(), `.deleted_${safeId}_${Date.now()}`);
               try {
-                const tombstonePath = path.join(getSessionsDir(), `${safeId}_${Date.now()}.tombstone`);
                 fs.renameSync(dir, tombstonePath);
+                try { fs.rmSync(tombstonePath, { recursive: true, force: true }); } catch {}
               } catch {}
             }
+
+            // Re-setup watcher after deletion
+            setupWatcher();
           }
           if (getActiveSessionId() === safeId) {
             const remaining = listSessions();
@@ -640,6 +734,7 @@ const server = http.createServer((req, res) => {
       activeSessionId: sId,
       sessions: listSessions(),
       tasks,
+      taskIds: readSessionTaskIds(sId),
       response: readSessionResponse(sId),
       agentStatus: getAgentStatus(tasks.length, sId),
     }));
@@ -661,9 +756,15 @@ const server = http.createServer((req, res) => {
 
           // Update cache so readSessionTasks knows this addition is queued by user
           const prev = sessionTasksCache.get(sId) || [];
-          sessionTasksCache.set(sId, [...prev, singleLineTask]);
+          // If user sends /exit, mark session as stopped immediately
+          const stoppedPath = path.join(sessionDir, ".stopped");
+          if (singleLineTask === "/exit" || singleLineTask === "__FINISH__") {
+            safeWriteFile(stoppedPath, String(Date.now()));
+          } else if (fs.existsSync(stoppedPath)) {
+            try { fs.unlinkSync(stoppedPath); } catch {}
+          }
 
-          safeAppendFile(tasksPath, singleLineTask + "\n");
+          safeAppendFile(tasksPath, makeTaskLine(singleLineTask) + "\n");
 
           // Note: Do NOT append to RESPONSE.md here!
           // Tasks stay in the left queue until the model actually pops them!
@@ -672,7 +773,7 @@ const server = http.createServer((req, res) => {
           const meta = getSessionMeta(sId);
           meta.updatedAt = Date.now();
           // Auto-name untitled session based on the first task
-          if (meta.name === "新对话" || meta.name === sId) {
+          if (meta.name === "新对话" || meta.name === "新会话" || meta.name === sId) {
             meta.name = singleLineTask.slice(0, 24);
           }
           saveSessionMeta(sId, meta);
@@ -681,7 +782,78 @@ const server = http.createServer((req, res) => {
           broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), sessions: listSessions() }));
+        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId), sessions: listSessions() }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Update a single task in queue (by task id for stability under concurrent pops)
+  if (url.pathname === "/api/update-task" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      try {
+        const { session_id, id, task } = JSON.parse(body || "{}");
+        const sId = sanitizeSessionId(session_id);
+        const p = path.join(getSessionDir(sId), "TASKS.txt");
+        const raw = safeReadFile(p) || "";
+        const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        const taskId = String(id || "").trim();
+        const cleanTask = typeof task === "string" ? task.trim().replace(/\r?\n+/g, " ") : "";
+        if (taskId && cleanTask) {
+          const idx = lines.findIndex(l => getTaskLineId(l) === taskId);
+          if (idx >= 0) {
+            lines[idx] = makeTaskLine(cleanTask);
+            isClearingTasks.add(sId);
+            sessionTasksCache.set(sId, getTaskContents(lines));
+            safeWriteFile(p, serializeTaskLines(lines));
+            setTimeout(() => isClearingTasks.delete(sId), 500);
+            broadcastUpdate();
+          }
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId) }));
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Delete a specific task or multiple tasks from queue (by task id for stability)
+  if (url.pathname === "/api/delete-task" && req.method === "POST") {
+    let body = "";
+    req.on("data", chunk => body += chunk);
+    req.on("end", () => {
+      try {
+        const { session_id, id, ids } = JSON.parse(body || "{}");
+        const sId = sanitizeSessionId(session_id);
+        const p = path.join(getSessionDir(sId), "TASKS.txt");
+        const raw = safeReadFile(p) || "";
+        let lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+        const toDelete = new Set();
+        if (Array.isArray(ids)) {
+          ids.forEach(i => toDelete.add(String(i)));
+        } else if (id !== undefined && id !== null) {
+          toDelete.add(String(id));
+        }
+
+        if (toDelete.size > 0) {
+          lines = lines.filter(l => !toDelete.has(getTaskLineId(l)));
+          isClearingTasks.add(sId);
+          sessionTasksCache.set(sId, getTaskContents(lines));
+          safeWriteFile(p, serializeTaskLines(lines));
+          setTimeout(() => isClearingTasks.delete(sId), 500);
+          broadcastUpdate();
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId) }));
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
@@ -787,6 +959,10 @@ const server = http.createServer((req, res) => {
           currentWorkspace = path.resolve(workspace);
           ensureDefaultSession();
           setupWatcher();
+          // Write pointer so the MCP gateway can discover the active workspace across processes.
+          try {
+            safeWriteFile(path.join("D:\\Project\\Workspace", ".workspace_pointer"), currentWorkspace);
+          } catch {}
           broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -835,4 +1011,7 @@ process.on("unhandledRejection", (reason) => {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`6Pro Assistant Server running at http://127.0.0.1:${PORT}`);
 });
+
+// Event loop keepalive timer to ensure daemon process never drains
+setInterval(() => {}, 60_000);
 

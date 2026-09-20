@@ -1,4 +1,4 @@
-# 6pro 任务服务一键启动脚本
+﻿# 6pro 任务服务一键启动脚本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 | Out-Null

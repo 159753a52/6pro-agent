@@ -271,7 +271,10 @@
         <span class="tracking-wide">当前待办队列</span>
         <span id="taskCountBadge" class="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-200/70 text-zinc-600 font-mono font-medium">0</span>
       </div>
-      <button id="btnClearTasks" class="hover:text-zinc-700 transition" title="清空待办任务">清空</button>
+      <div id="taskQueueActions" class="flex items-center gap-2 text-[10.5px]">
+        <button id="btnToggleSelectTasks" onclick="toggleTaskSelectMode()" class="hover:text-zinc-700 transition" title="多选删除任务">选择</button>
+        <button id="btnClearTasks" onclick="clearAllTasks()" class="hover:text-zinc-700 transition" title="清空待办任务">清空</button>
+      </div>
     </div>
 
     <!-- Task List (TASKS.txt) -->
@@ -414,6 +417,10 @@
     let isDraftNewSession = false;
     let lastEpoch = 0;
     let currentSessionsCache = [];
+    let currentTasksCache = [];
+    let currentTaskIdsCache = [];
+    let isTaskSelectMode = false;
+    let selectedTaskIndices = new Set();
     const sessionBus = window.BroadcastChannel ? new BroadcastChannel("6pro_session_bus") : null;
 
     // Auto-expand textarea height gracefully
@@ -624,8 +631,14 @@
       if (status.state === "timeout_1h" || status.state === "waiting_resume") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-900 border border-amber-300 shadow-xs transition-all duration-300 select-none cursor-pointer hover:bg-amber-100";
         dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
-        label.textContent = status.label || "⚠️ 网页端已停笔 · 待发指令接力";
+        label.textContent = status.label || "⚠️ 网页端已停止 · 待发指令接力";
         badge.title = status.detail || "点击复制续接词并在 ChatGPT 网页端发送";
+        badge.onclick = () => copyCurrentResumePrompt(badge);
+      } else if (status.state === "turn_ended") {
+        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 text-zinc-700 border border-zinc-300 shadow-xs transition-all duration-300 select-none cursor-pointer hover:bg-zinc-200";
+        dot.className = "w-2 h-2 rounded-full bg-zinc-400";
+        label.textContent = status.label || "● 网页端已停止生成 · 待命";
+        badge.title = status.detail || "点击复制续接指令并在网页端发送";
         badge.onclick = () => copyCurrentResumePrompt(badge);
       } else if (status.state === "waiting") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs transition-all duration-300 select-none cursor-default";
@@ -647,45 +660,63 @@
 
     function renderStatusCard(status) {
       if (!status) return "";
-      if (status.state === "timeout_1h" || status.state === "waiting_resume") {
+      if (status.state === "timeout_1h" || status.state === "waiting_resume" || status.state === "turn_ended") {
         currentResumePromptText = status.resumePrompt || `你当前继续绑定本地会话【${activeSessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(step_summary="续接执行任务【${activeSessionId}】") 领取待办任务并继续执行。`;
-        const cardTitle = status.title || "检测到模型在网页端已停止生成（待命接力）";
+        const isTurnEnded = status.state === "turn_ended";
+        const cardTitle = status.title || (isTurnEnded ? "检测到模型在网页端已停止生成" : "检测到模型在网页端已停止生成（待命接力）");
         const cardTag = status.tag || "Turn Ended";
-        const cardDetail = status.detail || "模型上一轮推导已停笔。未完成任务完好保留在待办队列中。";
+        const cardDetail = status.detail || (isTurnEnded ? "模型在网页端上一轮推导已停止，当前暂无待办任务。在下方发送新任务，或在网页端发送指令即可唤醒！" : "模型上一轮推导已停笔。未完成任务完好保留在待办队列中。");
+        
+        const containerClasses = isTurnEnded
+          ? "mt-8 mb-4 p-4 rounded-xl bg-zinc-50 border border-zinc-300/80 shadow-xs flex flex-col gap-3 transition-all select-none"
+          : "mt-8 mb-4 p-4 rounded-xl bg-amber-50/95 border-2 border-amber-300 shadow-sm flex flex-col gap-3 transition-all select-none";
+        const iconContainer = isTurnEnded
+          ? '<div class="p-2 rounded-lg bg-zinc-200 text-zinc-700 shrink-0 mt-0.5"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></div>'
+          : '<div class="p-2 rounded-lg bg-amber-100 text-amber-800 shrink-0 mt-0.5"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg></div>';
+        const titleColor = isTurnEnded ? "text-zinc-900" : "text-amber-950";
+        const tagClasses = isTurnEnded ? "bg-zinc-200 text-zinc-800" : "bg-amber-200/80 text-amber-900";
+        const detailColor = isTurnEnded ? "text-zinc-600" : "text-amber-800";
+        const btnClasses = isTurnEnded
+          ? "bg-zinc-800 hover:bg-zinc-900 active:scale-95 text-white"
+          : "bg-amber-600 hover:bg-amber-700 active:scale-95 text-white";
+        const boxBg = isTurnEnded ? "bg-white border-zinc-200 text-zinc-800" : "bg-white border-amber-200 text-amber-950";
+        const tipText = isTurnEnded
+          ? "👉 唤醒提示：随时在下方发送新任务；或在刚刚的 ChatGPT 网页端发送“继续”（或粘贴复制的续接指令）唤醒！"
+          : "👉 续接方法：直接在刚刚的 ChatGPT 网页端输入“继续”发送（或粘贴复制的续接指令），即可自动接力执行！";
+        const textareaStyle = isTurnEnded
+          ? "bg-zinc-100/70 border-zinc-200/80 focus:ring-zinc-400"
+          : "bg-amber-50/70 border-amber-200/80 focus:ring-amber-400";
+
         return `
-          <div class="mt-8 mb-4 p-4 rounded-xl bg-amber-50/95 border-2 border-amber-300 shadow-sm flex flex-col gap-3 transition-all select-none">
+          <div class="${containerClasses}">
             <div class="flex items-start justify-between gap-3">
               <div class="flex items-start gap-3">
-                <div class="p-2 rounded-lg bg-amber-100 text-amber-800 shrink-0 mt-0.5">
-                  <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                </div>
+                ${iconContainer}
                 <div>
-                  <div class="text-[14px] font-semibold text-amber-950 flex items-center gap-2">
+                  <div class="text-[14px] font-semibold ${titleColor} flex items-center gap-2">
                     <span>${escapeHtml(cardTitle)}</span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-200/80 text-amber-900 font-mono font-bold">${escapeHtml(cardTag)}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded ${tagClasses} font-mono font-bold">${escapeHtml(cardTag)}</span>
                   </div>
-                  <div class="text-[12.5px] text-amber-800 mt-1 leading-relaxed">
+                  <div class="text-[12.5px] ${detailColor} mt-1 leading-relaxed">
                     ${escapeHtml(cardDetail)}
                   </div>
                 </div>
               </div>
               <div class="shrink-0 flex items-center gap-2">
-                <button id="btnCopyResumePrompt" onclick="copyCurrentResumePrompt(this)" class="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer">
+                <button id="btnCopyResumePrompt" onclick="copyCurrentResumePrompt(this)" class="px-3.5 py-1.5 rounded-lg ${btnClasses} text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer">
                   <span>📋 复制续接指令</span>
                 </button>
               </div>
             </div>
 
-            <div class="p-3 rounded-lg bg-white border border-amber-200 text-xs text-amber-950 flex flex-col gap-2">
+            <div class="p-3 rounded-lg ${boxBg} text-xs flex flex-col gap-2">
               <div class="flex items-center justify-between">
-                <div class="flex items-center gap-1.5 font-semibold text-amber-950">
-                  <span>👉 续接方法：直接在刚刚的 ChatGPT 网页端输入“继续”发送（或粘贴复制的续接指令），即可自动接力执行！</span>
+                <div class="flex items-center gap-1.5 font-semibold">
+                  <span>${tipText}</span>
                 </div>
                 <span class="text-[11px] text-zinc-400">点击下方框内可全选复制</span>
               </div>
-              <textarea readonly id="resumePromptBox" onclick="this.select(); copyCurrentResumePrompt(document.getElementById('btnCopyResumePrompt'))" class="w-full font-mono text-[11.5px] leading-relaxed text-zinc-800 bg-amber-50/70 p-2.5 rounded-lg border border-amber-200/80 resize-none focus:outline-none focus:ring-1 focus:ring-amber-400 select-all cursor-pointer hover:bg-amber-100/40 transition" rows="2">${escapeHtml(currentResumePromptText)}</textarea>
+              <textarea readonly id="resumePromptBox" onclick="this.select(); copyCurrentResumePrompt(document.getElementById('btnCopyResumePrompt'))" class="w-full font-mono text-[11.5px] leading-relaxed text-zinc-800 ${textareaStyle} p-2.5 rounded-lg border resize-none focus:outline-none focus:ring-1 select-all cursor-pointer hover:opacity-90 transition" rows="2">${escapeHtml(currentResumePromptText)}</textarea>
             </div>
           </div>
         `;
@@ -766,6 +797,153 @@
       }).join("");
     }
 
+    // Render Task List in Sidebar with inline edit and delete
+    function renderTaskList() {
+      const tasks = currentTasksCache || [];
+      const taskIds = currentTaskIdsCache || [];
+      const queueActionsEl = document.getElementById("taskQueueActions");
+      if (queueActionsEl) {
+        if (isTaskSelectMode) {
+          queueActionsEl.innerHTML = `
+            <button onclick="deleteSelectedTasks()" class="text-rose-600 hover:text-rose-700 font-semibold transition cursor-pointer" title="删除勾选的任务">删除 (<span id="selectedTaskCount">${selectedTaskIndices.size}</span>)</button>
+            <button onclick="toggleTaskSelectMode(false)" class="text-zinc-500 hover:text-zinc-700 transition cursor-pointer">完成</button>
+          `;
+        } else {
+          queueActionsEl.innerHTML = `
+            ${tasks.length > 0 ? `<button id="btnToggleSelectTasks" onclick="toggleTaskSelectMode(true)" class="hover:text-zinc-700 transition cursor-pointer" title="多选删除任务">选择</button>` : ''}
+            <button id="btnClearTasks" onclick="clearAllTasks()" class="hover:text-zinc-700 transition cursor-pointer" title="清空待办任务">清空</button>
+          `;
+        }
+      }
+
+      if (tasks.length === 0) {
+        isTaskSelectMode = false;
+        selectedTaskIndices.clear();
+        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-6 text-[12px]">队列已空<br>等待新任务</div>';
+        return;
+      }
+
+      if (isTaskSelectMode) {
+        elTaskList.innerHTML = tasks.map((task, idx) => {
+          const taskId = taskIds[idx] || "";
+          const isChecked = selectedTaskIndices.has(taskId);
+          return `
+            <div class="flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-xs hover:bg-zinc-200/60 transition cursor-pointer select-none ${isChecked ? 'bg-zinc-200/50' : ''}" onclick="toggleTaskCheck('${taskId}')">
+              <input type="checkbox" ${isChecked ? "checked" : ""} class="mt-0.5 rounded text-blue-600 focus:ring-0 cursor-pointer pointer-events-none shrink-0">
+              <span class="font-mono text-zinc-400 text-[11px] shrink-0 mt-0.5">#${idx + 1}</span>
+              <span class="flex-1 line-clamp-2 leading-relaxed text-zinc-800 break-words font-normal">${escapeHtml(task)}</span>
+            </div>
+          `;
+        }).join("");
+      } else {
+        elTaskList.innerHTML = tasks.map((task, idx) => {
+          const taskId = taskIds[idx] || "";
+          return `
+            <div class="group flex items-start justify-between gap-1.5 px-2.5 py-1.5 rounded-lg text-xs hover:bg-zinc-200/50 transition cursor-pointer" onclick="editTaskPrompt('${taskId}', ${idx})" title="点击可直接修改任务">
+              <div class="flex items-start gap-2 min-w-0 flex-1">
+                <span class="font-mono text-zinc-400 text-[11px] shrink-0 mt-0.5">#${idx + 1}</span>
+                <span class="flex-1 line-clamp-2 leading-relaxed text-zinc-800 break-words select-text font-normal hover:text-blue-600 transition">${escapeHtml(task)}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition mt-0.5">
+                <button onclick="event.stopPropagation(); editTaskPrompt('${taskId}', ${idx})" class="p-0.5 text-zinc-400 hover:text-zinc-800 rounded transition cursor-pointer" title="修改任务">✏️</button>
+                <button class="px-1 py-0.5 text-xs text-zinc-400 hover:text-rose-600 rounded transition cursor-pointer" onclick="event.stopPropagation(); triggerDeleteTask('${taskId}', this)" title="删除此任务">🗑️</button>
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
+    }
+
+    let taskDeleteConfirmTimers = new Map();
+    window.triggerDeleteTask = async function(taskId, btnEl) {
+      if (!btnEl) return;
+      if (btnEl.dataset.confirming === "true") {
+        clearTimeout(taskDeleteConfirmTimers.get(taskId));
+        taskDeleteConfirmTimers.delete(taskId);
+        btnEl.disabled = true;
+        btnEl.innerHTML = `<span class="text-[10px] text-zinc-400">⏳</span>`;
+        try {
+          await fetch("/api/delete-task", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: activeSessionId, id: taskId }),
+          });
+        } catch (e) {
+          alert("删除任务失败: " + e.message);
+        }
+        return;
+      }
+
+      btnEl.dataset.confirming = "true";
+      btnEl.innerHTML = `<span class="text-[10.5px] font-bold text-rose-600 bg-rose-50 px-1 py-0.5 rounded border border-rose-200 select-none">删除?</span>`;
+      const timer = setTimeout(() => {
+        btnEl.dataset.confirming = "false";
+        btnEl.innerHTML = `🗑️`;
+        taskDeleteConfirmTimers.delete(taskId);
+      }, 3000);
+      taskDeleteConfirmTimers.set(taskId, timer);
+    };
+
+    window.editTaskPrompt = async function(taskId, idx) {
+      if (!currentTasksCache || idx < 0 || idx >= currentTasksCache.length) return;
+      const currentTask = currentTasksCache[idx];
+      const newTask = window.prompt(`修改待办任务 #${idx + 1}：`, currentTask);
+      if (newTask !== null && newTask.trim() && newTask.trim() !== currentTask) {
+        try {
+          await fetch("/api/update-task", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: activeSessionId, id: taskId, task: newTask.trim() }),
+          });
+        } catch (e) {
+          alert("修改任务失败: " + e.message);
+        }
+      }
+    };
+
+    window.toggleTaskSelectMode = function(val) {
+      isTaskSelectMode = (typeof val === "boolean") ? val : !isTaskSelectMode;
+      selectedTaskIndices.clear();
+      renderTaskList();
+    };
+
+    window.toggleTaskCheck = function(taskId) {
+      if (selectedTaskIndices.has(taskId)) {
+        selectedTaskIndices.delete(taskId);
+      } else {
+        selectedTaskIndices.add(taskId);
+      }
+      renderTaskList();
+    };
+
+    window.deleteSelectedTasks = async function() {
+      if (selectedTaskIndices.size === 0) return;
+      const count = selectedTaskIndices.size;
+      if (confirm(`确认删除已勾选的 ${count} 项待办任务？`)) {
+        try {
+          await fetch("/api/delete-task", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: activeSessionId, ids: Array.from(selectedTaskIndices) }),
+          });
+          isTaskSelectMode = false;
+          selectedTaskIndices.clear();
+        } catch (e) {
+          alert("批量删除任务失败: " + e.message);
+        }
+      }
+    };
+
+    window.clearAllTasks = async function() {
+      if (confirm(`确认清空会话 [${activeSessionId}] 的待办任务队列？`)) {
+        await fetch("/api/clear-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: activeSessionId }),
+        });
+      }
+    };
+
     function updateUI(data) {
       if (data.workspace) {
         elWorkspace.textContent = data.workspace;
@@ -794,17 +972,10 @@
 
       // Render tasks in left sidebar
       const tasks = data.tasks || [];
+      currentTasksCache = tasks;
+      currentTaskIdsCache = data.taskIds || [];
       elTaskBadge.textContent = tasks.length;
-      if (tasks.length === 0) {
-        elTaskList.innerHTML = '<div class="text-zinc-400 italic text-center py-6 text-[12px]">队列已空<br>等待新任务</div>';
-      } else {
-        elTaskList.innerHTML = tasks.map((task, idx) => `
-          <div class="group flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-xs text-zinc-700 hover:bg-zinc-200/50 transition cursor-default">
-            <span class="font-mono text-zinc-400 text-[11px] shrink-0 mt-0.5">#${idx + 1}</span>
-            <span class="flex-1 line-clamp-2 leading-relaxed text-zinc-800 break-words select-text font-normal">${escapeHtml(task)}</span>
-          </div>
-        `).join("");
-      }
+      renderTaskList();
 
       // Update Agent Status Badge
       updateAgentStatusBadge(data.agentStatus);
@@ -857,7 +1028,7 @@
         await fetch("/api/sessions/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: newId, name: "新会话" }),
+          body: JSON.stringify({ id: newId, name: newId }),
         });
         await selectSession(newId);
         elInput.focus();
@@ -885,11 +1056,13 @@
     };
 
     let deleteConfirmTimers = new Map();
+    let deleteConfirmingIds = new Set();
     window.triggerDeleteSession = async function(id, btnEl) {
       if (!btnEl) return;
-      if (btnEl.dataset.confirming === "true") {
+      if (deleteConfirmingIds.has(id)) {
         clearTimeout(deleteConfirmTimers.get(id));
         deleteConfirmTimers.delete(id);
+        deleteConfirmingIds.delete(id);
         btnEl.disabled = true;
         btnEl.innerHTML = `<span class="text-[10px] text-zinc-400">⏳</span>`;
         try {
@@ -912,11 +1085,11 @@
         return;
       }
 
-      btnEl.dataset.confirming = "true";
+      deleteConfirmingIds.add(id);
       btnEl.innerHTML = `<span class="text-[11px] font-bold text-rose-600 bg-rose-50 px-1 py-0.5 rounded border border-rose-200 select-none">确认?</span>`;
 
       const timer = setTimeout(() => {
-        btnEl.dataset.confirming = "false";
+        deleteConfirmingIds.delete(id);
         btnEl.innerHTML = "🗑️";
         deleteConfirmTimers.delete(id);
       }, 3500);
@@ -984,15 +1157,9 @@
     btnNewDraftChat.addEventListener("click", createAndSelectNewSession);
 
     // Clear buttons
-    btnClearTasks.addEventListener("click", async () => {
-      if (confirm(`确认清空会话 [${activeSessionId}] 的待办任务队列？`)) {
-        await fetch("/api/clear-tasks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: activeSessionId }),
-        });
-      }
-    });
+    if (btnClearTasks) {
+      btnClearTasks.addEventListener("click", clearAllTasks);
+    }
 
     btnFinishTurn.addEventListener("click", async () => {
       if (confirm(`确认结束会话 [${activeSessionId}] 的本轮交互并让 6pro 进行最终收尾交付？`)) {
