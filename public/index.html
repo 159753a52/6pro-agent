@@ -488,7 +488,25 @@
           const body = trimmed.substring(match[0].length).trim();
 
           if (type === "用户任务") {
-            const parsedBody = marked.parse(body);
+            let userPromptText = body;
+            let accidentalModelReply = "";
+
+            // Compatibility check: Detect if model output was appended into the user task section without a divider
+            // Case 1: Model echoed "用户任务：..." in its own response
+            const matchModelEcho = body.match(/^(.*?)(?:\r?\n){2,}(用户任务\s*[：:][\s\S]*)$/);
+            if (matchModelEcho) {
+              userPromptText = matchModelEcho[1].trim();
+              accidentalModelReply = matchModelEcho[2].trim();
+            } else {
+              // Case 2: Historical data where user prompt is short and followed by model response paragraphs
+              const splitParts = body.split(/(?:\r?\n){2,}/);
+              if (splitParts.length >= 2 && splitParts[0].length < 200 && splitParts.slice(1).join("\n\n").length > splitParts[0].length) {
+                userPromptText = splitParts[0].trim();
+                accidentalModelReply = splitParts.slice(1).join("\n\n").trim();
+              }
+            }
+
+            const parsedBody = marked.parse(userPromptText);
             htmlParts.push(`
               <div class="codex-user-turn my-8 flex justify-end">
                 <div class="max-w-[92%] sm:max-w-[85%] w-full bg-[#f4f4f6] border border-[#e4e4e7] rounded-2xl px-5 py-4 shadow-sm transition hover:border-[#d4d4d8]">
@@ -505,10 +523,19 @@
                 </div>
               </div>
             `);
+
+            if (accidentalModelReply) {
+              htmlParts.push(formatAssistantBody(accidentalModelReply));
+            }
             continue;
           }
 
           if (type === "阶段汇报") {
+            const isPointer = /^(?:(?:Done|Step complete|阶段任务已完成)[,\s]*)?(?:see|详见)\s*(?:本地\s*)?RESPONSE\.md$/i.test(body.trim());
+            if (isPointer) {
+              // Omit redundant empty pointer card
+              continue;
+            }
             const divider = `
               <div class="codex-stage-divider">
                 <svg class="w-3.5 h-3.5 text-zinc-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">

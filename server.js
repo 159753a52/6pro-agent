@@ -211,7 +211,7 @@ function readSessionTasks(sessionId) {
       const timeStr = new Date().toLocaleTimeString("zh-CN", { hour12: false });
       for (const pt of poppedTasks) {
         if (pt && pt.trim()) {
-          const userTaskBlock = `\n\n### 用户任务 [${timeStr}]\n${pt.trim()}\n\n`;
+          const userTaskBlock = `\n\n### 用户任务 [${timeStr}]\n${pt.trim()}\n\n### 阶段汇报 [${timeStr}]\n\n`;
           safeAppendFile(responsePath, userTaskBlock);
         }
       }
