@@ -148,6 +148,18 @@ function saveSessionMeta(sessionId, meta) {
   safeWriteFile(metaPath, JSON.stringify(meta, null, 2));
 }
 
+function getSessionActivity(sessionId, now = Date.now()) {
+  const dir = getSessionDir(sessionId);
+  const heartbeat = Number(safeReadFile(path.join(dir, ".heartbeat")).trim());
+  const lastActivityAt = Number.isFinite(heartbeat) && heartbeat > 0 && heartbeat <= now ? heartbeat : 0;
+  const age = lastActivityAt ? now - lastActivityAt : Infinity;
+  const stopped = fs.existsSync(path.join(dir, ".stopped"));
+  const hasTask = Boolean(safeReadFile(path.join(dir, ".active_task")).trim());
+  // Use this session's evidence only: a shared browser may be generating for another session.
+  const activity = stopped ? "offline" : hasTask && age < 600000 ? "running" : age < 45000 ? "waiting" : "offline";
+  return { activity, lastActivityAt };
+}
+
 function listSessions() {
   ensureDefaultSession();
   const sessionsDir = getSessionsDir();
@@ -167,11 +179,14 @@ function listSessions() {
       createdAt: meta.createdAt || 0,
       updatedAt: meta.updatedAt || 0,
       taskCount: tasks.length,
+      ...getSessionActivity(sId),
     });
   }
 
-  // Sort: most recently updated first
-  result.sort((a, b) => b.updatedAt - a.updatedAt);
+  const priority = { running: 0, waiting: 1, offline: 2 };
+  result.sort((a, b) => priority[a.activity] - priority[b.activity]
+    || Math.max(b.lastActivityAt, b.updatedAt) - Math.max(a.lastActivityAt, a.updatedAt)
+    || a.id.localeCompare(b.id));
   return result;
 }
 
@@ -513,7 +528,9 @@ setInterval(() => {
   const currentActive = getActiveSessionId();
   const tasks = readSessionTasks(currentActive);
   const st = getAgentStatus(tasks.length, currentActive);
-  const statusKey = `${st.state}:${st.label}:${st.detail}`;
+  // Observe every session so background activity and heartbeat expiry can reorder the sidebar.
+  const activityKey = listSessions().map(s => `${s.id}:${s.activity}:${s.lastActivityAt}`).join("|");
+  const statusKey = `${st.state}:${st.label}:${st.detail}:${activityKey}`;
   if (statusKey !== lastBroadcastStatusKey) {
     lastBroadcastStatusKey = statusKey;
     broadcastUpdate();

@@ -70,6 +70,13 @@ test("HTTP deletion retargets two subscribers and remains deleted after restart"
     const second = await subscribe("sess_a");
     await first(data => data.activeSessionId === "sess_a");
     await second(data => data.activeSessionId === "sess_a");
+    // Heartbeats do not trigger the file watcher: the all-session timer must publish this change.
+    await new Promise(resolve => setTimeout(resolve, 200)); // Drain creation/task watcher debounce.
+    fs.writeFileSync(path.join(workspace, "sessions", "sess_b", ".active_task"), "Background task");
+    fs.writeFileSync(path.join(workspace, "sessions", "sess_b", ".heartbeat"), String(Date.now()));
+    const backgroundFirst = data => data.sessions[0]?.id === "sess_b" && data.sessions[0]?.activity === "running";
+    assert.equal((await first(backgroundFirst)).activeSessionId, "sess_a");
+    assert.equal((await second(backgroundFirst)).activeSessionId, "sess_a");
     const deleted = await request("/api/sessions/delete", { id: "sess_a" });
     assert.equal(deleted.status, 200);
     assert.equal(deleted.data.sessions.some(s => s.id === "sess_a"), false);
