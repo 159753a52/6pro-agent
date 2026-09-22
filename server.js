@@ -755,7 +755,7 @@ const server = http.createServer((req, res) => {
     req.on("end", () => {
       try {
         const { task, session_id } = JSON.parse(body || "{}");
-        const sId = sanitizeSessionId(session_id);
+        const sId = (session_id && session_id.trim()) ? sanitizeSessionId(session_id) : getActiveSessionId();
         if (task && task.trim()) {
           const singleLineTask = task.trim().replace(/\r?\n+/g, " ");
           const sessionDir = getSessionDir(sId);
