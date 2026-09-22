@@ -1050,7 +1050,7 @@
         });
         const res = await fetch(`/api/info?session_id=${encodeURIComponent(sessId)}`);
         const data = await res.json();
-        updateUI(data);
+        if (res.ok && activeSessionId === sessId) updateUI(data);
       } catch {}
       if (sessionBus) sessionBus.postMessage({ type: "SESSION_SWITCHED", sessionId: sessId });
     };
@@ -1106,6 +1106,7 @@
             body: JSON.stringify({ id }),
           });
           const data = await res.json();
+          if (!res.ok || !data.success) throw new Error(data.error || "删除失败");
           if (data && data.sessions) {
             renderSessions(data.sessions);
           }
@@ -1149,11 +1150,18 @@
       if (evtSource) {
         evtSource.close();
       }
-      evtSource = new EventSource(`/api/events?session_id=${encodeURIComponent(sessionId)}`);
-      evtSource.onmessage = (e) => {
+      const source = new EventSource(`/api/events?session_id=${encodeURIComponent(sessionId)}`);
+      evtSource = source;
+      source.onmessage = (e) => {
+        if (source !== evtSource) return;
         try {
           const data = JSON.parse(e.data);
           if (data.epoch && data.epoch < lastEpoch) return;
+          if (data.activeSessionId && data.activeSessionId !== activeSessionId) {
+            activeSessionId = data.activeSessionId;
+            localStorage.setItem("6pro_active_session", activeSessionId);
+            connectSSE(activeSessionId);
+          }
           if (data.epoch) lastEpoch = data.epoch;
           updateUI(data);
         } catch {}

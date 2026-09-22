@@ -94,11 +94,8 @@ function getTaskIds(lines) {
 
 function getSessionDir(sessionId) {
   const safeId = sanitizeSessionId(sessionId);
-  const dir = path.join(getSessionsDir(), safeId);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  return dir;
+  // Resolving a path must never resurrect a deleted session during a read/SSE update.
+  return path.join(currentWorkspace, "sessions", safeId);
 }
 
 function ensureDefaultSession() {
@@ -234,11 +231,29 @@ function readSessionResponse(sessionId) {
   return safeReadFile(p);
 }
 
+function deleteStoredSession(sessionId) {
+  const dir = getSessionDir(sessionId);
+  if (!fs.existsSync(dir)) return;
+  const meta = getSessionMeta(sessionId);
+  meta.deleted = true;
+  // Keep this tombstone in place: stale browser/model activity must not resurrect the ID.
+  if (!safeWriteFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2))) {
+    throw new Error("Failed to persist session deletion");
+  }
+  sessionTasksCache.delete(sessionId);
+  for (const item of fs.readdirSync(dir)) {
+    if (item === "meta.json") continue;
+    try { fs.rmSync(path.join(dir, item), { recursive: true, force: true }); } catch {}
+  }
+  safeWriteFile(path.join(dir, "TASKS.txt"), "/exit\n");
+  safeWriteFile(path.join(dir, ".stopped"), String(Date.now()));
+}
+
 const activeSessionFile = path.join(currentWorkspace, ".active_session");
 
 function getActiveSessionId() {
   const saved = safeReadFile(activeSessionFile).trim();
-  if (saved && fs.existsSync(getSessionDir(saved))) {
+  if (saved && fs.existsSync(getSessionDir(saved)) && !getSessionMeta(saved).deleted) {
     return sanitizeSessionId(saved);
   }
   return "default";
@@ -449,7 +464,9 @@ function broadcastUpdate() {
   const sessions = listSessions();
   for (const client of sseClients) {
     try {
-      const sessId = client._targetSessionId || currentActive;
+      const requestedId = client._targetSessionId || currentActive;
+      const sessId = sessions.some(s => s.id === requestedId) ? requestedId : currentActive;
+      client._targetSessionId = sessId;
       const tasks = readSessionTasks(sessId);
       const data = JSON.stringify({
         workspace: currentWorkspace,
@@ -519,7 +536,8 @@ const server = http.createServer((req, res) => {
 
   // SSE stream
   if (url.pathname === "/api/events") {
-    const querySession = sanitizeSessionId(url.searchParams.get("session_id"));
+    const requestedSession = sanitizeSessionId(url.searchParams.get("session_id"));
+    const querySession = listSessions().some(s => s.id === requestedSession) ? requestedSession : getActiveSessionId();
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -564,6 +582,7 @@ const server = http.createServer((req, res) => {
       try {
         const { session_id } = JSON.parse(body || "{}");
         const safeId = sanitizeSessionId(session_id);
+        if (!listSessions().some(s => s.id === safeId)) throw new Error("Session no longer exists");
         setActiveSessionId(safeId);
         broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -592,6 +611,8 @@ const server = http.createServer((req, res) => {
         const { id, name } = JSON.parse(body || "{}");
         const safeId = sanitizeSessionId(id || `sess_${Date.now().toString(36)}`);
         const sessionDir = getSessionDir(safeId);
+        if (fs.existsSync(sessionDir)) throw new Error("Session ID already exists or was deleted; use a new ID");
+        fs.mkdirSync(sessionDir, { recursive: true });
         const meta = {
           id: safeId,
           name: (name && name.trim() && name.trim() !== "新会话" && name.trim() !== "新对话") ? name.trim().slice(0, 40) : (safeId === "default" ? "默认会话" : safeId),
@@ -636,7 +657,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Delete session (Soft delete with .tombstone to prevent Windows handle lock crashes)
+  // Delete session while retaining a durable tombstone for stale readers and workers.
   if (url.pathname === "/api/sessions/delete" && req.method === "POST") {
     let body = "";
     req.on("data", chunk => body += chunk);
@@ -649,43 +670,9 @@ const server = http.createServer((req, res) => {
           safeWriteFile(path.join(getSessionDir("default"), "TASKS.txt"), "");
           safeWriteFile(path.join(getSessionDir("default"), "RESPONSE.md"), "");
         } else {
-          const dir = path.join(getSessionsDir(), safeId);
-          if (fs.existsSync(dir)) {
-            // Close watcher to release directory handles on Windows
-            if (workspaceWatcher) {
-              try { workspaceWatcher.close(); } catch {}
-              workspaceWatcher = null;
-            }
-
-            // Step 1: Write deleted flag into meta.json while dir still exists
-            const meta = getSessionMeta(safeId);
-            meta.deleted = true;
-            saveSessionMeta(safeId, meta);
-
-            // Step 2: Empty the directory contents except meta.json
-            try {
-              for (const item of fs.readdirSync(dir)) {
-                if (item === "meta.json") continue;
-                fs.rmSync(path.join(dir, item), { recursive: true, force: true });
-              }
-            } catch {}
-
-            // Step 3: Remove the now-empty directory
-            try {
-              fs.rmdirSync(dir);
-            } catch {
-              // Fallback: rename as tombstone
-              const tombstonePath = path.join(getSessionsDir(), `.deleted_${safeId}_${Date.now()}`);
-              try {
-                fs.renameSync(dir, tombstonePath);
-                try { fs.rmSync(tombstonePath, { recursive: true, force: true }); } catch {}
-              } catch {}
-            }
-
-            // Re-setup watcher after deletion
-            setupWatcher();
-          }
-          if (getActiveSessionId() === safeId) {
+          const wasActive = getActiveSessionId() === safeId;
+          deleteStoredSession(safeId);
+          if (wasActive) {
             const remaining = listSessions();
             const nextId = remaining.length > 0 ? remaining[0].id : "default";
             setActiveSessionId(nextId);
@@ -710,11 +697,7 @@ const server = http.createServer((req, res) => {
         if (s.id !== "default" && s.taskCount === 0) {
           const resp = readSessionResponse(s.id);
           if (!resp || !resp.trim()) {
-            const dir = path.join(getSessionsDir(), s.id);
-            const meta = getSessionMeta(s.id);
-            meta.deleted = true;
-            saveSessionMeta(s.id, meta);
-            try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+            deleteStoredSession(s.id);
           }
         }
       }
@@ -736,6 +719,11 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/api/info" && req.method === "GET") {
     const paramSess = url.searchParams.get("session_id");
     const sId = (paramSess && paramSess.trim()) ? sanitizeSessionId(paramSess) : getActiveSessionId();
+    if (!listSessions().some(s => s.id === sId)) {
+      res.writeHead(410, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Session no longer exists" }));
+      return;
+    }
     const expectedDir = url.searchParams.get("session_dir");
     if (expectedDir && path.resolve(expectedDir) !== path.resolve(currentWorkspace, "sessions", sId)) {
       res.writeHead(409, { "Content-Type": "application/json" });
@@ -769,6 +757,7 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ error: "Workspace changed; refusing to enqueue in another session directory" }));
           return;
         }
+        if (!listSessions().some(s => s.id === sId)) throw new Error("Session no longer exists");
         if (task && task.trim()) {
           const singleLineTask = task.trim().replace(/\r?\n+/g, " ");
           const sessionDir = getSessionDir(sId);
