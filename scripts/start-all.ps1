@@ -1,4 +1,11 @@
-﻿# 6pro 任务服务一键启动脚本
+﻿$ErrorActionPreference = 'Stop'
+$restartMutex = New-Object System.Threading.Mutex($false, 'Local\SixProServiceRestart')
+$restartOwned = $false
+try {
+    try { $restartOwned = $restartMutex.WaitOne(0) }
+    catch [System.Threading.AbandonedMutexException] { $restartOwned = $true }
+    if (!$restartOwned) { Write-Host '6pro 正在启动，请勿重复点击。'; return }
+# 6pro 任务服务一键启动脚本
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 | Out-Null
@@ -14,6 +21,17 @@ $tunnelProfiles = "C:\Users\13914\.codex-chatgpt-web\tunnel\profiles"
 $serverJs = "D:\Project\6pro-agent\server.js"
 $electronExe = "C:\Users\13914\AppData\Local\Programs\Codex Web GPT\Codex Web GPT.exe"
 
+foreach ($required in @($bunExe, $cliJs, $tunnelBin, $serverJs, $electronExe, 'D:\tools\nodejs\node.exe')) {
+    if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "缺少启动文件: $required" }
+}
+Write-Host "正在停止旧的 6pro 服务..." -ForegroundColor Yellow
+& "$PSScriptRoot\stop-all.ps1" -NoPause
+foreach ($servicePort in @(17841, 17888)) {
+    if (Get-NetTCPConnection -LocalPort $servicePort -State Listen -ErrorAction SilentlyContinue) {
+        throw "端口 $servicePort 仍被占用；未关闭不属于 6pro 的进程。"
+    }
+}
+
 # 1. 检查 Codex Web GPT 桌面端 (持有 ChatGPT 登录态)
 Write-Host "`n[1/4] 检查 Codex Web GPT 桌面端..." -ForegroundColor Yellow
 $electronProc = Get-Process -Name "Codex Web GPT" -ErrorAction SilentlyContinue
@@ -21,7 +39,7 @@ if ($electronProc) {
     Write-Host "  -> [OK] Codex Web GPT 客户端已在运行 (PID: $($electronProc[0].Id))" -ForegroundColor Green
 } else {
     Write-Host "  -> [启动] 正在启动 Codex Web GPT 桌面客户端..." -ForegroundColor Magenta
-    Start-Process -FilePath $electronExe
+    Start-Process -FilePath $electronExe -WindowStyle Hidden
     Start-Sleep -Seconds 2
     Write-Host "  -> [OK] Codex Web GPT 客户端启动成功" -ForegroundColor Green
 }
@@ -44,7 +62,7 @@ if ($port17841) {
     if ($ready) {
         Write-Host "  -> [OK] 17841 调度服务启动成功 (PID: $($port17841[0].OwningProcess))" -ForegroundColor Green
     } else {
-        Write-Host "  -> [警告] 17841 端口暂未检测到监听，请检查日志" -ForegroundColor Red
+        throw "17841 调度服务启动失败，请检查日志"
     }
 }
 
@@ -61,7 +79,7 @@ if ($tunnelProc) {
     if ($tunnelProc) {
         Write-Host "  -> [OK] MCP 隧道网关启动成功 (PID: $($tunnelProc[0].Id))" -ForegroundColor Green
     } else {
-        Write-Host "  -> [警告] tunnel-client 启动可能需要少许时间" -ForegroundColor Yellow
+        throw "MCP 隧道启动失败，请检查日志"
     }
 }
 
@@ -72,7 +90,7 @@ if ($port17888) {
     Write-Host "  -> [OK] 17888 控制台已在运行 (PID: $($port17888[0].OwningProcess))" -ForegroundColor Green
 } else {
     Write-Host "  -> [启动] 正在后台启动 6pro 控制台服务..." -ForegroundColor Magenta
-    Start-Process -FilePath "node" -ArgumentList "`"$serverJs`"" -WorkingDirectory "D:\Project\6pro-agent" -WindowStyle Hidden
+    Start-Process -FilePath "D:\tools\nodejs\node.exe" -ArgumentList "`"$serverJs`"" -WorkingDirectory "D:\Project\6pro-agent" -WindowStyle Hidden
     
     $ready = $false
     for ($i = 0; $i -lt 10; $i++) {
@@ -83,7 +101,7 @@ if ($port17888) {
     if ($ready) {
         Write-Host "  -> [OK] 17888 控制台启动成功 (PID: $($port17888[0].OwningProcess))" -ForegroundColor Green
     } else {
-        Write-Host "  -> [警告] 17888 端口暂未检测到监听" -ForegroundColor Red
+        throw "17888 控制台启动失败，请检查日志"
     }
 }
 
@@ -95,5 +113,11 @@ Write-Host "====================================================" -ForegroundCol
 Start-Process "http://127.0.0.1:17888"
 
 Write-Host "`n提示：所有后台服务已保持常驻运行，可安全关闭本窗口。" -ForegroundColor Gray
-Write-Host "按回车键退出..." -ForegroundColor Gray
-[void][System.Console]::ReadLine()
+} catch {
+    Write-Host "启动失败: $($_.Exception.Message)" -ForegroundColor Red
+    [void](Read-Host '按回车关闭窗口')
+    exit 1
+} finally {
+    if ($restartOwned) { $restartMutex.ReleaseMutex() }
+    $restartMutex.Dispose()
+}

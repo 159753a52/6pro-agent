@@ -1,55 +1,36 @@
-﻿# 6pro 任务服务一键停止脚本
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-chcp 65001 | Out-Null
+﻿# Stop only processes owned by this 6pro installation.
+[CmdletBinding(SupportsShouldProcess = $true)]
+param([switch]$NoPause)
+$ErrorActionPreference = 'Stop'
 
-Write-Host "====================================================" -ForegroundColor Cyan
-Write-Host "            6Pro 服务一键停止脚本                   " -ForegroundColor Cyan
-Write-Host "====================================================" -ForegroundColor Cyan
-
-# 1. 停止 17888 (6pro 控制台)
-$port17888 = Get-NetTCPConnection -LocalPort 17888 -State Listen -ErrorAction SilentlyContinue
-if ($port17888) {
-    $procId = $port17888[0].OwningProcess
-    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-    Write-Host "[OK] 已停止 17888 6pro 控制台服务 (PID: $procId)" -ForegroundColor Green
-} else {
-    Write-Host "[--] 17888 服务未在运行" -ForegroundColor Gray
-}
-
-# 2. 停止 17841 (codex-chatgpt-web 调度守护进程)
-$port17841 = Get-NetTCPConnection -LocalPort 17841 -State Listen -ErrorAction SilentlyContinue
-if ($port17841) {
-    $procId = $port17841[0].OwningProcess
-    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-    Write-Host "[OK] 已停止 17841 调度服务 (PID: $procId)" -ForegroundColor Green
-} else {
-    Write-Host "[--] 17841 服务未在运行" -ForegroundColor Gray
-}
-
-# 3. 停止 tunnel-client (OpenAI MCP 隧道网关)
-$tunnelProc = Get-Process -Name "tunnel-client" -ErrorAction SilentlyContinue
-if ($tunnelProc) {
-    foreach ($p in $tunnelProc) {
-        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-        Write-Host "[OK] 已停止 tunnel-client 进程 (PID: $($p.Id))" -ForegroundColor Green
+function Test-SixProProcess($Process) {
+    $exe = $Process.ExecutablePath
+    $command = $Process.CommandLine
+    if ($exe -eq 'C:\Users\13914\AppData\Local\Programs\Codex Web GPT\Codex Web GPT.exe') { return $true }
+    if ($exe -eq 'C:\Users\13914\.codex-chatgpt-web\bin\tunnel-client.exe') {
+        return $command -match '--profile\s+"?codex-chatgpt-web"?(?:\s|$)'
     }
-} else {
-    Write-Host "[--] tunnel-client 网关未在运行" -ForegroundColor Gray
-}
-
-# 4. 停止 bun (MCP 运行时子进程)
-$bunProc = Get-Process -Name "bun" -ErrorAction SilentlyContinue
-if ($bunProc) {
-    foreach ($p in $bunProc) {
-        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-        Write-Host "[OK] 已停止 bun MCP 运行时进程 (PID: $($p.Id))" -ForegroundColor Green
+    if ($Process.Name -eq 'node.exe') {
+        return $command -match '(?:^|[\s"])D:\\Project\\6pro-agent\\server\.js(?:"|\s|$)'
     }
-} else {
-    Write-Host "[--] bun 进程未在运行" -ForegroundColor Gray
+    if ($Process.Name -eq 'bun.exe') {
+        return $command -match '(?:^|[\s"])(?:D:\\Project\\codex-chatgpt-web\\dist\\runtime\\app|C:\\Users\\13914\\\.codex-chatgpt-web\\versions\\[^\\]+\\app)\\cli\.js"?\s+(?:serve|mcp)(?:\s|$)'
+    }
+    return $false
 }
 
-Write-Host ""
-Write-Host "所有 6pro 相关后台服务已安全停止。" -ForegroundColor Yellow
-Write-Host "按回车键退出..." -ForegroundColor Gray
-[void][System.Console]::ReadLine()
+# Stop the app/tunnel first so they cannot respawn a worker we just stopped.
+$targets = @(Get-CimInstance Win32_Process | Where-Object { Test-SixProProcess $_ } |
+    Sort-Object @{ Expression = { if ($_.Name -eq 'Codex Web GPT.exe') { 0 } elseif ($_.Name -eq 'tunnel-client.exe') { 1 } else { 2 } } })
+foreach ($target in $targets) {
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId = $($target.ProcessId)"
+    if (!$current -or $current.CreationDate -ne $target.CreationDate -or !(Test-SixProProcess $current)) { continue }
+    if ($PSCmdlet.ShouldProcess("$($target.Name) PID $($target.ProcessId)", 'Stop 6pro process')) {
+        $running = Get-Process -Id $target.ProcessId -ErrorAction SilentlyContinue
+        if ($running) {
+            $running.Kill()
+            if (!$running.WaitForExit(10000)) { throw "Process $($target.ProcessId) did not stop" }
+        }
+    }
+}
+if (!$NoPause) { [void](Read-Host 'Press Enter to close') }
