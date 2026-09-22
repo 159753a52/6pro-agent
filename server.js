@@ -329,7 +329,7 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
       }
     } catch {}
 
-    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。\n【1小时额度复用长连接铁律】：即使没有待办任务，也必须保持挂起常驻！严禁向用户输出任何文字、结束语或总结，严禁停笔交卷！\n请立即发起单次独立的 MCP 工具调用 codex_fetch_next_task(session_id="${sessionId}", step_summary="Idle") 领取任务或进入常驻挂起监听。\n【防拦截与落盘铁律】：严禁在脚本内写循环调用；后台静默执行；实质阶段性成果直接以【追加模式 (append / >>)】写入本地 sessions/${sessionId}/RESPONSE.md 末尾；step_summary 参数严禁传入大段文本或代码，只允许传入 1~2 个极简英文单词（如 "Idle"、"Done"）；若暂无新任务，必须立即再次发起单次工具调用保持长连接挂起！`;
+    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。\n请发起单次 MCP 工具调用 codex_fetch_next_task(session_id="${sessionId}", step_summary="Idle") 检查待办任务。\n【协同规范】：完成任务时使用 response_text 提交成果，由服务端追加到绑定会话的 RESPONSE.md；step_summary 传入简短状态（如 "Idle", "Done"）；只要 has_next 为 true，在完成当前任务后继续调用工具接收后续指令。`;
 
     const browser = getBrowserStatus();
 
@@ -599,9 +599,10 @@ const server = http.createServer((req, res) => {
           updatedAt: Date.now(),
         };
         saveSessionMeta(safeId, meta);
+        setActiveSessionId(safeId);
         broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, session: meta, sessions: listSessions() }));
+        res.end(JSON.stringify({ success: true, session: meta, sessionDir, sessions: listSessions() }));
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
@@ -735,6 +736,12 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/api/info" && req.method === "GET") {
     const paramSess = url.searchParams.get("session_id");
     const sId = (paramSess && paramSess.trim()) ? sanitizeSessionId(paramSess) : getActiveSessionId();
+    const expectedDir = url.searchParams.get("session_dir");
+    if (expectedDir && path.resolve(expectedDir) !== path.resolve(currentWorkspace, "sessions", sId)) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Workspace changed; refusing to read another session directory" }));
+      return;
+    }
     const tasks = readSessionTasks(sId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
@@ -755,8 +762,13 @@ const server = http.createServer((req, res) => {
     req.on("data", chunk => body += chunk);
     req.on("end", () => {
       try {
-        const { task, session_id } = JSON.parse(body || "{}");
+        const { task, session_id, session_dir } = JSON.parse(body || "{}");
         const sId = (session_id && session_id.trim()) ? sanitizeSessionId(session_id) : getActiveSessionId();
+        if (session_dir && path.resolve(session_dir) !== path.resolve(currentWorkspace, "sessions", sId)) {
+          res.writeHead(409, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Workspace changed; refusing to enqueue in another session directory" }));
+          return;
+        }
         if (task && task.trim()) {
           const singleLineTask = task.trim().replace(/\r?\n+/g, " ");
           const sessionDir = getSessionDir(sId);
