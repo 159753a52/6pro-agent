@@ -24,6 +24,11 @@ $electronExe = "C:\Users\13914\AppData\Local\Programs\Codex Web GPT\Codex Web GP
 foreach ($required in @($bunExe, $cliJs, $tunnelBin, $serverJs, $electronExe, 'D:\tools\nodejs\node.exe')) {
     if (!(Test-Path -LiteralPath $required -PathType Leaf)) { throw "缺少启动文件: $required" }
 }
+$sourceRoot = 'D:\Project\codex-chatgpt-web\src'
+$newestSource = Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+if ($newestSource.LastWriteTimeUtc -gt (Get-Item -LiteralPath $cliJs).LastWriteTimeUtc) {
+    throw '网关源码比构建产物新。为避免新旧协议混用，尚未停止现有服务。请先在 D:\Project\codex-chatgpt-web 执行 bun run build，再点击启动。'
+}
 Write-Host "正在停止旧的 6pro 服务..." -ForegroundColor Yellow
 & "$PSScriptRoot\stop-all.ps1" -NoPause
 foreach ($servicePort in @(17841, 17888)) {

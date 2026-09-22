@@ -370,8 +370,8 @@
             </div>
 
             <!-- Finish Turn Quick Action -->
-            <button id="btnFinishTurn" class="text-[11.5px] text-zinc-400 hover:text-rose-600 px-2 py-0.5 rounded hover:bg-rose-50 transition" title="发送 /exit 结束当前轮次">
-              结束本轮 (/exit)
+            <button id="btnFinishTurn" class="text-[11.5px] text-zinc-400 hover:text-rose-600 px-2 py-0.5 rounded hover:bg-rose-50 transition" title="请求停止，等待执行端确认；不会强杀正在运行的命令">
+              请求停止本轮
             </button>
           </div>
 
@@ -433,6 +433,20 @@
       elInput.style.height = "auto";
       elInput.style.height = Math.min(elInput.scrollHeight, 140) + "px";
     });
+
+    async function apiFetch(url, options) {
+      try {
+        const response = await fetch(url, options);
+        if (!response.ok) {
+          const data = await response.clone().json().catch(() => ({}));
+          throw new Error(data.error || `请求失败 (${response.status})`);
+        }
+        return response;
+      } catch (error) {
+        alert(error.message || "连接失败，请重试");
+        throw error;
+      }
+    }
 
     function escapeHtml(str) {
       return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -692,6 +706,9 @@
 
     function renderStatusCard(status) {
       if (!status) return "";
+      if (["unknown", "stopping", "offline"].includes(status.state)) {
+        return `<div class="my-4 p-4 rounded-xl border border-zinc-200 bg-zinc-50"><strong>${escapeHtml(status.label)}</strong><p class="text-sm mt-2">${escapeHtml(status.detail)}</p></div>`;
+      }
       if (status.state === "timeout_1h" || status.state === "waiting_resume" || status.state === "turn_ended") {
         currentResumePromptText = status.resumePrompt || `你当前继续绑定本地会话【${activeSessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="Idle") 领取待办任务并继续执行。`;
         const isTurnEnded = status.state === "turn_ended";
@@ -764,7 +781,7 @@
               <div>
                 <div class="text-[13px] font-medium text-emerald-900 flex items-center gap-2">
                   <span>模型在线待命保活中</span>
-                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-200/60 text-emerald-800 font-mono font-medium">60s Heartbeat</span>
+                  <span class="text-[10px] px-1.5 py-0.2 rounded bg-emerald-200/60 text-emerald-800 font-mono font-medium">心跳有效</span>
                 </div>
                 <div class="text-[12px] text-emerald-700/90 mt-0.5">${escapeHtml(status.detail || "心跳长连接常驻中，在下方发送新任务或追问，模型将立即唤醒并执行")}</div>
               </div>
@@ -786,7 +803,7 @@
               </div>
               <div>
                 <div class="text-[13px] font-medium text-blue-900 flex items-center gap-2">
-                  <span>模型正在全力执行中...</span>
+                  <span>正在执行任务</span>
                   <span class="text-[10px] px-1.5 py-0.2 rounded bg-blue-200/60 text-blue-800 font-mono font-medium">Busy</span>
                 </div>
                 <div class="text-[12px] text-blue-700/90 mt-0.5">${escapeHtml(status.detail || "正在改写用例、分析覆盖率或运行验证命令，请稍候...")}</div>
@@ -806,9 +823,13 @@
     }
 
     // Render Session List in Sidebar
+    let lastSessionRenderKey = "";
     function renderSessions(sessions) {
       if (!sessions) return;
       currentSessionsCache = sessions;
+      const renderKey = JSON.stringify([activeSessionId, isDraftNewSession, sessions.map(s => [s.id, s.name, s.taskCount, s.activity])]);
+      if (renderKey === lastSessionRenderKey) return;
+      lastSessionRenderKey = renderKey;
       elSessionList.innerHTML = sessions.map(sess => {
         const isActive = !isDraftNewSession && sess.id === activeSessionId;
         return `
@@ -821,7 +842,7 @@
             </div>
             <div class="flex items-center gap-1 shrink-0 opacity-40 group-hover:opacity-100 transition">
               <button class="p-0.5 hover:text-zinc-900 rounded" onclick="event.stopPropagation(); renameSessionPrompt('${escapeHtml(sess.id)}', '${escapeHtml(sess.name || '')}')" title="重命名">✏️</button>
-              ${sess.id !== 'default' ? `<button class="px-1 py-0.5 text-xs text-zinc-400 hover:text-rose-600 rounded transition" onclick="event.stopPropagation(); triggerDeleteSession('${escapeHtml(sess.id)}', this)" title="删除会话">🗑️</button>` : ''}
+              ${sess.id !== 'default' ? `<button class="px-1 py-0.5 text-xs text-zinc-400 hover:text-rose-600 rounded transition" onclick="event.stopPropagation(); triggerDeleteSession('${escapeHtml(sess.id)}', this)" title="从列表移除并请求停止；当前命令不保证立即结束">🗑️</button>` : ''}
             </div>
             ${sess.taskCount > 0 ? `<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-200/70 text-zinc-600 font-mono ml-1 shrink-0">${sess.taskCount}</span>` : ''}
           </div>
@@ -895,7 +916,7 @@
         btnEl.disabled = true;
         btnEl.innerHTML = `<span class="text-[10px] text-zinc-400">⏳</span>`;
         try {
-          await fetch("/api/delete-task", {
+          await apiFetch("/api/delete-task", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: activeSessionId, id: taskId }),
@@ -922,7 +943,7 @@
       const newTask = window.prompt(`修改待办任务 #${idx + 1}：`, currentTask);
       if (newTask !== null && newTask.trim() && newTask.trim() !== currentTask) {
         try {
-          await fetch("/api/update-task", {
+          await apiFetch("/api/update-task", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: activeSessionId, id: taskId, task: newTask.trim() }),
@@ -953,7 +974,7 @@
       const count = selectedTaskIndices.size;
       if (confirm(`确认删除已勾选的 ${count} 项待办任务？`)) {
         try {
-          await fetch("/api/delete-task", {
+          await apiFetch("/api/delete-task", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ session_id: activeSessionId, ids: Array.from(selectedTaskIndices) }),
@@ -967,8 +988,8 @@
     };
 
     window.clearAllTasks = async function() {
-      if (confirm(`确认清空会话 [${activeSessionId}] 的待办任务队列？`)) {
-        await fetch("/api/clear-tasks", {
+      if (confirm(`确认清空会话 [${activeSessionId}] 的待办任务？已经开始执行的任务不会被取消。`)) {
+        await apiFetch("/api/clear-tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: activeSessionId }),
@@ -977,6 +998,21 @@
     };
 
     function updateUI(data) {
+      if (data.runtime) {
+        let runtimePanel = document.getElementById("runtimeInfo");
+        if (!runtimePanel) {
+          runtimePanel = document.createElement("div");
+          runtimePanel.id = "runtimeInfo";
+          runtimePanel.className = "text-[11px] text-zinc-500 px-3 py-2 border-t border-zinc-200 break-words";
+          elSessionList.parentElement.appendChild(runtimePanel);
+        }
+        const info = data.runtime;
+        const buildLabel = info.gatewayBuild === "needs_build" ? "网关源码有更新，需要构建" : info.gatewayBuild === "built" ? "已发现网关构建产物" : "网关构建状态未知";
+        runtimePanel.textContent = `任务服务 ${info.loadedRevision} · 启动于 ${new Date(info.startedAt).toLocaleString()} · ${buildLabel}${info.needsRestart ? " · 服务代码已更新，需要重启" : ""}`;
+        const protocol = data.agentStatus?.gatewayProtocol;
+        runtimePanel.textContent += protocol ? ` · 当前会话网关协议 ${protocol}` : " · 当前会话网关版本未确认";
+        runtimePanel.title = info.gatewayBuildNote;
+      }
       if (data.workspace) {
         elWorkspace.textContent = data.workspace;
       }
@@ -1043,12 +1079,12 @@
       localStorage.setItem("6pro_active_session", sessId);
       connectSSE(sessId);
       try {
-        await fetch("/api/sessions/switch", {
+        await apiFetch("/api/sessions/switch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: sessId }),
         });
-        const res = await fetch(`/api/info?session_id=${encodeURIComponent(sessId)}`);
+        const res = await apiFetch(`/api/info?session_id=${encodeURIComponent(sessId)}`);
         const data = await res.json();
         if (res.ok && activeSessionId === sessId) updateUI(data);
       } catch {}
@@ -1059,7 +1095,7 @@
     async function createAndSelectNewSession() {
       const newId = `sess_${Date.now().toString(36)}`;
       try {
-        await fetch("/api/sessions/create", {
+        await apiFetch("/api/sessions/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: newId, name: newId }),
@@ -1074,7 +1110,7 @@
     window.renameSessionPrompt = async function(id, oldName) {
       const newName = prompt("请输入新会话名称：", oldName);
       if (newName && newName.trim() && newName.trim() !== oldName) {
-        const res = await fetch("/api/sessions/rename", {
+        const res = await apiFetch("/api/sessions/rename", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id, name: newName.trim() }),
@@ -1100,7 +1136,7 @@
         btnEl.disabled = true;
         btnEl.innerHTML = `<span class="text-[10px] text-zinc-400">⏳</span>`;
         try {
-          const res = await fetch("/api/sessions/delete", {
+          const res = await apiFetch("/api/sessions/delete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ id }),
@@ -1133,7 +1169,7 @@
 
     window.cleanEmptySessions = async function() {
       try {
-        const res = await fetch("/api/sessions/clean-empty", { method: "POST" });
+        const res = await apiFetch("/api/sessions/clean-empty", { method: "POST" });
         const data = await res.json();
         if (data && data.sessions) {
           renderSessions(data.sessions);
@@ -1168,24 +1204,38 @@
       };
     }
     connectSSE(activeSessionId);
-    fetch("/api/sessions/switch", {
+    apiFetch("/api/sessions/switch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: activeSessionId }),
     }).catch(() => {});
 
     // Send task
+    let sendingTask = false;
+    let pendingSubmission = null;
     async function submitTask() {
       const text = elInput.value.trim();
-      if (!text) return;
-      elInput.value = "";
-      elInput.style.height = "auto";
-
-      await fetch("/api/add-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task: text, session_id: activeSessionId }),
-      });
+      if (!text || sendingTask) return;
+      const sessionId = activeSessionId;
+      if (!pendingSubmission || pendingSubmission.text !== text || pendingSubmission.sessionId !== sessionId) {
+        pendingSubmission = { text, sessionId, id: crypto.randomUUID().replace(/-/g, "") };
+      }
+      sendingTask = true;
+      btnSend.disabled = true;
+      try {
+        const response = await apiFetch("/api/add-task", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task: text, session_id: sessionId, task_id: pendingSubmission.id }),
+        });
+        const data = await response.json();
+        if (!data.success) { alert(data.error || "任务未入队"); return; }
+        if (activeSessionId === sessionId && elInput.value.trim() === text) {
+          elInput.value = "";
+          elInput.style.height = "auto";
+        }
+        pendingSubmission = null;
+      } catch { /* apiFetch displayed the error; preserve text and task ID for a safe retry. */ }
+      finally { sendingTask = false; btnSend.disabled = false; }
     }
 
     btnSend.addEventListener("click", submitTask);
@@ -1204,8 +1254,8 @@
     }
 
     btnFinishTurn.addEventListener("click", async () => {
-      if (confirm(`确认结束会话 [${activeSessionId}] 的本轮交互并让 6pro 进行最终收尾交付？`)) {
-        await fetch("/api/add-task", {
+      if (confirm(`请求停止会话 [${activeSessionId}]？执行端将在下次领取任务时确认，当前命令可能继续执行，待办任务会保留。`)) {
+        await apiFetch("/api/add-task", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ task: "/exit", session_id: activeSessionId }),
@@ -1214,8 +1264,8 @@
     });
 
     btnClearResponse.addEventListener("click", async () => {
-      if (confirm(`确认清空会话 [${activeSessionId}] 的历史汇报？`)) {
-        await fetch("/api/clear-response", {
+      if (confirm(`确认清空会话 [${activeSessionId}] 的历史展示？已保存的任务结果仍保留。`)) {
+        await apiFetch("/api/clear-response", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: activeSessionId }),
@@ -1268,7 +1318,7 @@
         elImagePreviewArea.appendChild(badge);
 
         try {
-          const res = await fetch("/api/upload-image", {
+          const res = await apiFetch("/api/upload-image", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1314,7 +1364,7 @@
     async function changeWorkspacePrompt() {
       const target = prompt("输入工作区文件夹绝对路径：", elWorkspace.textContent);
       if (target && target.trim()) {
-        await fetch("/api/set-workspace", {
+        await apiFetch("/api/set-workspace", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ workspace: target.trim() }),
@@ -1334,7 +1384,7 @@
         `1. 任务流转与状态同步：通过 MCP 工具 codex_fetch_next_task 与本地工作区保持同步。\n` +
         `   - 调用参数：必须传入 session_id="${activeSessionId}"，step_summary 仅传入简短状态标识（如 "Idle", "Poll", "Done"）。\n` +
         `2. 单次独立调用：每次由模型自身发起单次独立的工具调用，等待返回后再进行下一步。\n` +
-        `3. 成果直接落盘：完成任务时使用 codex_fetch_next_task 的 response_text 提交成果，由服务端追加到绑定会话的 RESPONSE.md。\n` +
+        `3. 成果直接落盘：完成任务时使用 codex_fetch_next_task 的 task_id 和 response_text 提交成果，由服务端追加到绑定会话的 RESPONSE.md。\n` +
         `4. 持续协同监听：只要 has_next 为 true，在完成当前阶段任务并落盘后，请继续调用 codex_fetch_next_task 接收下一条指令。\n` +
         `5. 退出通道：当 codex_fetch_next_task 返回 has_next=false（用户输入 /exit）时，输出最终总结并结束本轮。\n` +
         `现在请调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="Idle") 获取首个任务或进入待命状态。`;
@@ -1371,7 +1421,7 @@
     if (sessionBus) {
       sessionBus.onmessage = (e) => {
         if (e.data && e.data.type === "SESSION_SWITCHED") {
-          fetch(`/api/sessions`).then(r => r.json()).then(d => renderSessions(d.sessions));
+          apiFetch(`/api/sessions`).then(r => r.json()).then(d => renderSessions(d.sessions));
         }
       };
     }

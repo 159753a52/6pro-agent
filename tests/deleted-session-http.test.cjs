@@ -17,6 +17,7 @@ test("HTTP deletion retargets two subscribers and remains deleted after restart"
     .replace('console.log(`6Pro Assistant Server running at http://127.0.0.1:${PORT}`);',
       'process.send({ port: server.address().port });');
   fs.writeFileSync(fixture, source);
+  fs.cpSync(path.join(__dirname, '..', 'lib'), path.join(workspace, 'lib'), { recursive: true });
   let child;
   const controllers = [];
   const start = async () => {
@@ -84,7 +85,7 @@ test("HTTP deletion retargets two subscribers and remains deleted after restart"
     await Promise.all([first(retargeted), second(retargeted)]);
     assert.equal((await request("/api/info?session_id=sess_a")).status, 410);
     assert.equal((await request("/api/sessions/switch", { session_id: "sess_a" })).status, 400);
-    assert.equal((await request("/api/add-task", { session_id: "sess_a", task: "Stale task" })).status, 400);
+    assert.equal((await request("/api/add-task", { session_id: "sess_a", task: "Stale task" })).status, 410);
     assert.equal((await request("/api/sessions/create", { id: "sess_a" })).status, 400);
     const staleTab = await subscribe("sess_a");
     await staleTab(retargeted);

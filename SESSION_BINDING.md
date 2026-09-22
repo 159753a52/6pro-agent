@@ -1,5 +1,8 @@
 # Session-bound launches
 
+Task protocol 2 supersedes the report/validation details below. See `TASK_PROTOCOL.md`
+for exact task IDs, stop acknowledgement, current offline validation and activation.
+
 `/api/sessions/create` returns `sessionDir`, the absolute directory created by that
 request. `ask-6pro spawn` passes that directory as Codex's cwd and `--cd` argument.
 It waits for a heartbeat in that exact directory before reporting a connection.

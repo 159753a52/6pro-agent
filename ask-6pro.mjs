@@ -37,6 +37,7 @@ function request(method, path, body = null) {
       });
     });
 
+    req.setTimeout(10000, () => req.destroy(new Error("请求超时")));
     req.on("error", (err) => {
       reject(new Error(`无法连接到 6pro 服务 (${BASE_URL}): ${err.message}。请确认 server.js 是否已启动。`));
     });
@@ -48,8 +49,8 @@ function request(method, path, body = null) {
   });
 }
 
-async function getInfo(sessionId = "", sessionDir = "") {
-  const query = `?${new URLSearchParams({ ...(sessionId ? { session_id: sessionId } : {}), ...(sessionDir ? { session_dir: sessionDir } : {}) })}`;
+async function getInfo(sessionId = "", sessionDir = "", taskId = "") {
+  const query = `?${new URLSearchParams({ ...(sessionId ? { session_id: sessionId } : {}), ...(sessionDir ? { session_dir: sessionDir } : {}), ...(taskId ? { task_id: taskId } : {}) })}`;
   const res = await request("GET", `/api/info${query}`);
   if (res.status !== 200) {
     const error = new Error(`获取信息失败 (HTTP ${res.status}): ${JSON.stringify(res.data)}`);
@@ -101,64 +102,25 @@ async function cmdSend(taskText, sessionId = "") {
   console.log(`当前队列剩余任务数: ${res.tasks.length}`);
 }
 
-async function waitForAnswer(sId, questionSnippet, initialLength = 0, timeoutSec = 300, sessionDir = "") {
-  const startTime = Date.now();
-  let taskPickedUp = false;
-  let responseStarted = false;
-  let lastResponseLength = initialLength;
-  let pollInterval = 1000;
-
-  while (Date.now() - startTime < timeoutSec * 1000) {
-    await new Promise((r) => setTimeout(r, pollInterval));
+async function waitForAnswer(sId, taskId, timeoutSec = 300, sessionDir = "") {
+  if (!taskId) throw new Error("服务端未返回 taskId，请更新任务服务后重试");
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutSec * 1000) {
     try {
-      const current = await getInfo(sId, sessionDir);
-      const currStatus = current.agentStatus || {};
-      const currResponse = current.response || "";
-      const currTasks = current.tasks || [];
-
-      // 任务是否已被 6Pro 出队开始执行
-      if (!taskPickedUp && (!currTasks.some((t) => t.includes(questionSnippet.slice(0, 20))) || currStatus.state === "busy")) {
-        taskPickedUp = true;
-        process.stdout.write(`⚡ 6Pro 已出队领取任务，正在深度思考与执行...\n`);
+      const info = await getInfo(sId, sessionDir, taskId);
+      const task = info.task;
+      if (task?.state === "completed") {
+        console.log(`\n=== 任务 ${taskId} 已完成 ===\n${task.response}`);
+        return task.response;
       }
-
-      // 回复是否已经开始写入实质内容
-      const incrementalCandidate = currResponse.slice(initialLength);
-      const cleanCandidate = extractAnswerText(incrementalCandidate);
-
-      if (cleanCandidate.length > 0) {
-        if (!responseStarted) {
-          responseStarted = true;
-          process.stdout.write(`📝 6Pro 正在持续落盘输出中`);
-        } else if (currResponse.length > lastResponseLength) {
-          process.stdout.write(`.`);
-          lastResponseLength = currResponse.length;
-        }
-      }
-
-      // 判断执行完成标准：任务已被领走，且 6Pro 已回到 waiting/空闲状态，且已产出实质内容
-      if (taskPickedUp && currStatus.state === "waiting" && cleanCandidate.length > 10) {
-        // 多等 1.5 秒确认写入完全落盘
-        await new Promise((r) => setTimeout(r, 1500));
-        const finalInfo = await getInfo(sId, sessionDir);
-        const finalResponse = finalInfo.response || "";
-
-        // 提取增量内容
-        const incremental = finalResponse.slice(initialLength).trim();
-
-        console.log(`\n\n=== 6Pro 回复完成 (耗时: ${Math.round((Date.now() - startTime) / 1000)}s) ===\n`);
-        const cleanAnswer = extractAnswerText(incremental);
-        console.log(cleanAnswer);
-        console.log(`\n===============================================\n`);
-        return cleanAnswer;
-      }
+      if (task?.state === "cancelled") throw Object.assign(new Error(task.reason || "任务已取消"), { terminal: true });
+      if (!task || task.state === "unknown") throw Object.assign(new Error("任务记录不可用；请检查网关是否已更新到任务协议 2"), { terminal: true });
     } catch (error) {
-      if (error.status === 409) throw error;
-      // 临时网络重试
+      if (error.terminal || (error.status >= 400 && error.status < 500)) throw error;
     }
+    await new Promise(resolve => setTimeout(resolve, 1000));
   }
-
-  throw new Error(`等待 6Pro 响应超时 (${timeoutSec}秒)。您可以稍后使用 'ask-6pro history' 查看是否已产出。`);
+  throw new Error(`等待任务 ${taskId} 超时 (${timeoutSec}秒)；这不会取消任务。请使用 history --session ${sId} 查看结果。`);
 }
 
 async function cmdAsk(question, timeoutSec = 300, sessionId = "") {
@@ -177,15 +139,13 @@ async function cmdAsk(question, timeoutSec = 300, sessionId = "") {
     console.warn(`提示: 可使用 'ask-6pro spawn' 自动创建新会话并自动开辟对话！`);
   }
 
-  const initialResponse = initInfo.response || "";
-  const initialLength = initialResponse.length;
 
   console.log(`\n🚀 正在向 6Pro 提问 [会话: ${sId}]...`);
   console.log(`❓ 问题: ${question}`);
-  await sendTask(question.trim(), sId, sessionDir);
+  const submitted = await sendTask(question.trim(), sId, sessionDir);
   console.log(`⏳ 任务已入队，等待 6Pro 领取并开始推理...\n`);
 
-  return await waitForAnswer(sId, question.trim(), initialLength, timeoutSec, sessionDir);
+  return await waitForAnswer(sId, submitted.taskId, timeoutSec, sessionDir);
 }
 
 function buildLaunchPrompt(sessionName, sessionId) {
@@ -196,7 +156,7 @@ function buildLaunchPrompt(sessionName, sessionId) {
 1. 任务流转与状态同步：通过 MCP 工具 codex_fetch_next_task 与本地工作区保持同步。
    - 调用参数：必须传入 session_id="${sessionId}"，step_summary 仅传入简短状态标识（如 "Idle", "Poll", "Done"）。
 2. 单次独立调用：每次由模型自身发起单次独立的工具调用，等待返回后再进行下一步。
-3. 成果直接落盘：完成任务时通过 codex_fetch_next_task 的 response_text 参数提交成果，由服务端追加到绑定会话的 RESPONSE.md，不要自行选择回复路径。
+3. 成果直接落盘：完成任务时通过 codex_fetch_next_task 的 task_id（领取时返回的原值）和 response_text 参数提交成果，由服务端追加到绑定会话的 RESPONSE.md，不要自行选择回复路径。
 4. 持续协同监听：只要 has_next 为 true，在完成当前阶段任务并落盘后，请继续调用 codex_fetch_next_task 接收下一条指令。
 5. 退出通道：当 codex_fetch_next_task 返回 has_next=false（用户输入 /exit）时，输出最终总结并结束本轮。
 现在请调用 codex_fetch_next_task(session_id="${sessionId}", step_summary="Idle") 获取首个任务或进入待命状态。`;
@@ -218,9 +178,10 @@ async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300) {
   }
   console.log(`\n✨ 已创建全新会话: 【${session.name}】(${sessionId})`);
 
+  let taskId;
   // 2. 如果提供了初始任务，先将其推入队列
   if (initialTask && initialTask.trim()) {
-    await sendTask(initialTask.trim(), sessionId, sessionDir);
+    taskId = (await sendTask(initialTask.trim(), sessionId, sessionDir)).taskId;
     console.log(`📋 初始任务已加入待办队列: "${initialTask.trim()}"`);
   }
 
@@ -267,7 +228,7 @@ async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300) {
   // 5. 持续监控与结果提取
   if (initialTask && initialTask.trim()) {
     console.log(`⏳ 正在等待 6Pro 自动建联并完成初始任务 (超时限制: ${timeoutSec}s)...`);
-    return await waitForAnswer(sessionId, initialTask.trim(), 0, timeoutSec, sessionDir);
+    return await waitForAnswer(sessionId, taskId, timeoutSec, sessionDir);
   } else {
     console.log(`✅ 新会话建联指令已在后台拉起，您可使用 ask-6pro status --session ${sessionId} 查看状态。`);
   }

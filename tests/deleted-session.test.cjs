@@ -13,7 +13,7 @@ test("stale readers and late worker writes do not resurrect deleted sessions", (
     const storage = source.slice(0, source.indexOf("const activeSessionFile ="))
       .replace(/let currentWorkspace = .*;/, `let currentWorkspace = ${JSON.stringify(workspace)};`);
     const load = () => vm.runInNewContext(storage + `\n({ getSessionDir, saveSessionMeta,
-      readSessionTasks, readSessionTaskIds, readSessionResponse, listSessions, deleteStoredSession });`, { require });
+      readSessionTasks, readSessionTaskIds, readSessionResponse, listSessions, deleteStoredSession });`, { require: require('node:module').createRequire(path.join(__dirname, '..', 'server.js')) });
     const api = load();
     const id = "sess_deleted";
     const dir = api.getSessionDir(id);
@@ -34,6 +34,10 @@ test("stale readers and late worker writes do not resurrect deleted sessions", (
     assert.equal(api.listSessions().some(s => s.id === id), false);
     assert.equal(load().listSessions().some(s => s.id === id), false, "deletion survives server restart");
     assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8")).deleted, true);
+    const orphan = api.getSessionDir('sess_legacy_orphan');
+    fs.mkdirSync(orphan);
+    api.deleteStoredSession('sess_legacy_orphan');
+    assert.equal(api.listSessions().some(s => s.id === 'sess_legacy_orphan'), false);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
   }

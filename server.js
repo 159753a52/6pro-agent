@@ -1,6 +1,8 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
+const taskStore = require("./lib/task-store.cjs");
+const { runtimeInfo } = require("./lib/runtime-info.cjs");
 
 const PORT = 17888;
 let currentWorkspace = path.resolve("D:\\Project\\Workspace");
@@ -66,32 +68,6 @@ function sanitizeSessionId(id) {
   return clean.slice(0, 64);
 }
 
-// Task line format: "id|content". For backward compatibility, lines without "|" are treated as id-less.
-function makeTaskLine(taskText) {
-  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  return `${id}|${taskText.replace(/\|/g, "｜")}`;
-}
-
-function parseTaskLine(line) {
-  const sep = line.indexOf("|");
-  if (sep > 0 && /^[a-zA-Z0-9]+$/.test(line.slice(0, sep))) {
-    return { id: line.slice(0, sep), content: line.slice(sep + 1) };
-  }
-  return { id: "", content: line };
-}
-
-function serializeTaskLines(lines) {
-  return lines.join("\n") + (lines.length > 0 ? "\n" : "");
-}
-
-function getTaskContents(lines) {
-  return lines.map(l => parseTaskLine(l).content);
-}
-
-function getTaskIds(lines) {
-  return lines.map(l => parseTaskLine(l).id);
-}
-
 function getSessionDir(sessionId) {
   const safeId = sanitizeSessionId(sessionId);
   // Resolving a path must never resurrect a deleted session during a read/SSE update.
@@ -145,7 +121,7 @@ function getSessionMeta(sessionId) {
 function saveSessionMeta(sessionId, meta) {
   const dir = getSessionDir(sessionId);
   const metaPath = path.join(dir, "meta.json");
-  safeWriteFile(metaPath, JSON.stringify(meta, null, 2));
+  taskStore.atomic(metaPath, JSON.stringify(meta, null, 2));
 }
 
 function getSessionActivity(sessionId, now = Date.now()) {
@@ -153,11 +129,11 @@ function getSessionActivity(sessionId, now = Date.now()) {
   const heartbeat = Number(safeReadFile(path.join(dir, ".heartbeat")).trim());
   const lastActivityAt = Number.isFinite(heartbeat) && heartbeat > 0 && heartbeat <= now ? heartbeat : 0;
   const age = lastActivityAt ? now - lastActivityAt : Infinity;
-  const stopped = fs.existsSync(path.join(dir, ".stopped"));
-  const hasTask = Boolean(safeReadFile(path.join(dir, ".active_task")).trim());
-  // Use this session's evidence only: a shared browser may be generating for another session.
-  const activity = stopped ? "offline" : hasTask && age < 600000 ? "running" : age < 45000 ? "waiting" : "offline";
-  return { activity, lastActivityAt };
+  const hasTask = Boolean(safeReadFile(path.join(dir, ".active_task")).trim() || taskStore.json(path.join(dir, ".active_task.json")));
+  const stopping = Boolean(safeReadFile(path.join(dir, ".stop_requested")).trim());
+  const stopped = Boolean(safeReadFile(path.join(dir, ".stopped")).trim());
+  const activity = stopping ? "stopping" : stopped ? "offline" : age < 45000 ? (hasTask ? "running" : "waiting") : hasTask ? "unknown" : "offline";
+  return { activity, lastActivityAt, lastInteractionAt: Number(safeReadFile(path.join(dir, ".last_interaction"))) || 0 };
 }
 
 function listSessions() {
@@ -183,61 +159,20 @@ function listSessions() {
     });
   }
 
-  const priority = { running: 0, waiting: 1, offline: 2 };
+  const priority = { running: 0, waiting: 1, stopping: 2, unknown: 2, offline: 3 };
   result.sort((a, b) => priority[a.activity] - priority[b.activity]
-    || Math.max(b.lastActivityAt, b.updatedAt) - Math.max(a.lastActivityAt, a.updatedAt)
+    || (b.lastInteractionAt || b.updatedAt) - (a.lastInteractionAt || a.updatedAt)
     || a.id.localeCompare(b.id));
   return result;
 }
 
-const sessionTasksCache = new Map();
-const isClearingTasks = new Set();
 
 function readSessionTasks(sessionId) {
-  const dir = getSessionDir(sessionId);
-  const p = path.join(dir, "TASKS.txt");
-  const raw = safeReadFile(p);
-  const currentTaskLines = raw ? raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [];
-  const currentTasks = getTaskContents(currentTaskLines);
-
-  if (!sessionTasksCache.has(sessionId)) {
-    sessionTasksCache.set(sessionId, currentTasks);
-    return currentTasks;
-  }
-
-  const prevTasks = sessionTasksCache.get(sessionId);
-  sessionTasksCache.set(sessionId, currentTasks);
-
-  if (isClearingTasks.has(sessionId)) {
-    return currentTasks;
-  }
-
-  // Detect if tasks were consumed from the head of the queue by the model
-  if (prevTasks.length > currentTasks.length) {
-    const poppedCount = prevTasks.length - currentTasks.length;
-    // Verify if remaining tasks match the tail of prevTasks
-    const matchesTail = currentTasks.every((t, i) => t === prevTasks[i + poppedCount]);
-    if (matchesTail) {
-      const poppedTasks = prevTasks.slice(0, poppedCount);
-      const responsePath = path.join(getSessionDir(sessionId), "RESPONSE.md");
-      const timeStr = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-      for (const pt of poppedTasks) {
-        if (pt && pt.trim()) {
-          const userTaskBlock = `\n\n### 用户任务 [${timeStr}]\n${pt.trim()}\n\n### 阶段汇报 [${timeStr}]\n\n`;
-          safeAppendFile(responsePath, userTaskBlock);
-        }
-      }
-    }
-  }
-
-  return currentTasks;
+  return taskStore.queue(getSessionDir(sessionId)).map(task => task.content);
 }
 
 function readSessionTaskIds(sessionId) {
-  const p = path.join(getSessionDir(sessionId), "TASKS.txt");
-  const raw = safeReadFile(p);
-  const lines = raw ? raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean) : [];
-  return getTaskIds(lines);
+  return taskStore.queue(getSessionDir(sessionId)).map(task => task.id);
 }
 
 function readSessionResponse(sessionId) {
@@ -248,26 +183,13 @@ function readSessionResponse(sessionId) {
 
 function deleteStoredSession(sessionId) {
   const dir = getSessionDir(sessionId);
-  if (!fs.existsSync(dir)) return;
-  const meta = getSessionMeta(sessionId);
-  meta.deleted = true;
-  // Keep this tombstone in place: stale browser/model activity must not resurrect the ID.
-  if (!safeWriteFile(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2))) {
-    throw new Error("Failed to persist session deletion");
-  }
-  sessionTasksCache.delete(sessionId);
-  for (const item of fs.readdirSync(dir)) {
-    if (item === "meta.json") continue;
-    try { fs.rmSync(path.join(dir, item), { recursive: true, force: true }); } catch {}
-  }
-  safeWriteFile(path.join(dir, "TASKS.txt"), "/exit\n");
-  safeWriteFile(path.join(dir, ".stopped"), String(Date.now()));
+  if (fs.existsSync(dir)) taskStore.deleteSession(dir);
 }
 
-const activeSessionFile = path.join(currentWorkspace, ".active_session");
+const activeSessionFile = () => path.join(currentWorkspace, ".active_session");
 
 function getActiveSessionId() {
-  const saved = safeReadFile(activeSessionFile).trim();
+  const saved = safeReadFile(activeSessionFile()).trim();
   if (saved && fs.existsSync(getSessionDir(saved)) && !getSessionMeta(saved).deleted) {
     return sanitizeSessionId(saved);
   }
@@ -276,200 +198,26 @@ function getActiveSessionId() {
 
 function setActiveSessionId(sessionId) {
   const clean = sanitizeSessionId(sessionId);
-  safeWriteFile(activeSessionFile, clean);
+  taskStore.atomic(activeSessionFile(), clean);
   return clean;
 }
 
-const LOG_PATH = "C:\\Users\\13914\\.local\\state\\tunnel-client\\logs\\codex-chatgpt-web.log";
-const LAUNCHER_LOG_PATH = path.join(
-  process.env.APPDATA || "C:\\Users\\13914\\AppData\\Roaming",
-  "Codex Web GPT",
-  "logs",
-  "launcher.jsonl"
-);
-
-function getBrowserStatus() {
-  try {
-    if (!fs.existsSync(LAUNCHER_LOG_PATH)) return { isGenerating: false, lastEvent: null, ageSec: 999 };
-    const stat = fs.statSync(LAUNCHER_LOG_PATH);
-    const readSize = Math.min(stat.size, 16384);
-    const fd = fs.openSync(LAUNCHER_LOG_PATH, "r");
-    const buffer = Buffer.alloc(readSize);
-    fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
-    fs.closeSync(fd);
-    const lines = buffer.toString("utf8").trim().split("\n").filter(Boolean);
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const item = JSON.parse(lines[i]);
-        if (item.event === "browser.turn_ended") {
-          const ageSec = (Date.now() - new Date(item.at).getTime()) / 1000;
-          return { isGenerating: false, lastEvent: "turn_ended", ageSec };
-        }
-        if (item.event === "browser.turn_heartbeat") {
-          const ageSec = (Date.now() - new Date(item.at).getTime()) / 1000;
-          return { isGenerating: ageSec < 25, lastEvent: "turn_heartbeat", ageSec };
-        }
-      } catch {}
-    }
-  } catch {}
-  return { isGenerating: false, lastEvent: null, ageSec: 999 };
-}
-
 function getAgentStatus(tasksCount = 0, sessionId = "default") {
-  try {
-    const sessionDir = getSessionDir(sessionId);
-    const heartbeatPath = path.join(sessionDir, ".heartbeat");
-    const activeTaskPath = path.join(sessionDir, ".active_task");
-    const now = Date.now();
-
-    let heartbeatTime = 0;
-    if (fs.existsSync(heartbeatPath)) {
-      const hbStr = safeReadFile(heartbeatPath).trim();
-      const parsed = parseInt(hbStr, 10);
-      if (!isNaN(parsed) && parsed > 0) {
-        heartbeatTime = parsed;
-      } else if (parsed === 0) {
-        heartbeatTime = 0;
-      } else {
-        heartbeatTime = fs.statSync(heartbeatPath).mtimeMs;
-      }
-    }
-
-    // Check if this session has an active task being executed
-    const hasActiveTask = fs.existsSync(activeTaskPath) && safeReadFile(activeTaskPath).trim().length > 0;
-
-    // Check session age: use .turn_started (written by gateway at turn start) as the 1h timeout baseline;
-    // fall back to meta.createdAt for legacy sessions.
-    let sessionAgeMin = 0;
-    try {
-      const turnStartedPath = path.join(sessionDir, ".turn_started");
-      let turnStartMs = 0;
-      if (fs.existsSync(turnStartedPath)) {
-        turnStartMs = parseInt(safeReadFile(turnStartedPath).trim(), 10) || 0;
-      }
-      if (!turnStartMs) {
-        const metaPath = path.join(sessionDir, "meta.json");
-        if (fs.existsSync(metaPath)) {
-          const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-          if (meta.createdAt) turnStartMs = meta.createdAt;
-        }
-      }
-      if (turnStartMs) {
-        sessionAgeMin = (now - turnStartMs) / 60000;
-      }
-    } catch {}
-
-    const resumePrompt = `你当前继续绑定本地会话【${sessionId}】。\n请发起单次 MCP 工具调用 codex_fetch_next_task(session_id="${sessionId}", step_summary="Idle") 检查待办任务。\n【协同规范】：完成任务时使用 response_text 提交成果，由服务端追加到绑定会话的 RESPONSE.md；step_summary 传入简短状态（如 "Idle", "Done"）；只要 has_next 为 true，在完成当前任务后继续调用工具接收后续指令。`;
-
-    const browser = getBrowserStatus();
-
-    const stoppedPath = path.join(sessionDir, ".stopped");
-    if (fs.existsSync(stoppedPath)) {
-      return {
-        state: "offline",
-        label: "6Pro 已结束本轮 (/exit)",
-        detail: "本轮推导已由 /exit 优雅终结。如需发起新一轮，请点击右上角【复制启动词】在网页重新发送。",
-        lastActive: heartbeatTime ? new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false }) : ""
-      };
-    }
-
-    // Case 0: If this session has NEVER received a heartbeat, it's NOT connected yet!
-    if (!heartbeatTime) {
-      return {
-        state: "offline",
-        label: "6Pro 待启动 / 未连接",
-        detail: "请点击右上角【复制启动词】并在 ChatGPT 网页端发送以激活此会话",
-      };
-    }
-
-    const hbAgeSec = (now - heartbeatTime) / 1000;
-    const isSessionActive = hbAgeSec < 45;
-
-    // Case 1: 1-hour timeout (session age >= 50m and not generating and heartbeat expired)
-    if (sessionAgeMin >= 50 && hbAgeSec > 90 && !browser.isGenerating) {
-      return {
-        state: "timeout_1h",
-        label: "⚠️ 1小时限时已达 · 待续接",
-        title: "检测到模型单轮 1 小时限时已达（已停止思考）",
-        tag: "1h Timeout",
-        detail: `会话已进行 ${Math.round(sessionAgeMin)} 分钟，已达云端单轮推导限时。待办任务完好保留在队列中，请在原网页直接发送指令接力下一轮！`,
-        resumePrompt,
-        sessionId,
-        tasksCount,
-        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-      };
-    }
-
-    // Case 2: Actively executing a task
-    // Either heartbeat is fresh (< 45s), browser is generating, or active task is within reasonable execution window (< 10min)
-    if (hasActiveTask && (isSessionActive || browser.isGenerating || hbAgeSec < 600)) {
-      return {
-        state: "running",
-        label: "6Pro 正在执行任务...",
-        detail: `模型正在深度推理与执行命令中（已运行 ${Math.round(hbAgeSec)} 秒）...`,
-        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-      };
-    }
-
-    // Case 3: Idle keep-alive hanging (session is active, no active task, task queue empty)
-    if (isSessionActive && !hasActiveTask && tasksCount === 0) {
-      return {
-        state: "waiting",
-        label: "6Pro 在线保活中 · 等待任务",
-        detail: "长连接心跳保活中，随时下发新任务将在 500ms 内执行",
-        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-      };
-    }
-
-    // Case 4: Actively processing task or pending queue
-    if (browser.isGenerating && (hasActiveTask || tasksCount > 0)) {
-      return {
-        state: "running",
-        label: "6Pro 深度思考 / 执行中...",
-        detail: "网页端正在实时推理与处理中（心跳正常）...",
-        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-      };
-    }
-
-    // Case 4b: Fallback idle keep-alive if session heartbeat is fresh
-    if (isSessionActive) {
-      return {
-        state: "waiting",
-        label: "6Pro 在线保活中 · 等待任务",
-        detail: "长连接心跳保活中，随时下发新任务将在 500ms 内执行",
-        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-      };
-    }
-
-    // Case 5: Heartbeat expired (> 45s) AND browser is NOT generating -> Actually stopped!
-    if (tasksCount > 0 || hasActiveTask) {
-      return {
-        state: "waiting_resume",
-        label: "⚠️ 网页端已停止 · 待发指令接力",
-        title: "检测到模型在网页端已停止生成（待命接力）",
-        tag: "Turn Ended",
-        detail: `模型在上一轮已停笔，队列中有 ${tasksCount + (hasActiveTask ? 1 : 0)} 项任务尚未完成。请在网页端发送“继续”接力！`,
-        resumePrompt,
-        sessionId,
-        tasksCount: tasksCount + (hasActiveTask ? 1 : 0),
-        lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-      };
-    }
-
-    return {
-      state: "turn_ended",
-      label: "● 网页端已停止生成 · 待命",
-      title: "检测到模型在网页端已停止生成",
-      tag: "Turn Ended",
-      detail: "模型在网页端上一轮推导已停止，当前暂无待办任务。在下方发送新任务，或在网页端发送指令即可唤醒！",
-      resumePrompt,
-      sessionId,
-      tasksCount: 0,
-      lastActive: new Date(heartbeatTime).toLocaleTimeString("zh-CN", { hour12: false })
-    };
-  } catch (e) {
-    return { state: "unknown", label: "状态检测中", detail: e.message };
-  }
+  const status = getSessionActivity(sessionId);
+  const descriptions = {
+    running: ["正在执行任务", "该会话有执行中任务，且最近 45 秒内收到心跳。"],
+    waiting: ["在线待命", "该会话心跳正常，等待领取任务。"],
+    stopping: ["已请求停止 · 等待执行端确认", "停止请求将在执行端下次领取任务时确认；当前命令可能仍在执行。"],
+    unknown: ["连接状态待确认", "执行中任务仍保留，但心跳已过期；无法确认模型是否还在运行。"],
+    offline: ["离线 / 已停止", "当前没有有效心跳。启动或续接后才能领取待办任务。"],
+  };
+  const [label, summary] = descriptions[status.activity];
+  const dir = getSessionDir(sessionId);
+  const current = taskStore.json(path.join(dir, ".active_task.json"));
+  const worker = taskStore.json(path.join(dir, ".worker.json"));
+  const detail = current ? `${summary} 当前任务：${current.content}` : summary;
+  return { state: status.activity, label, detail, tasksCount, sessionId, gatewayProtocol: worker?.protocol || null,
+    lastActive: status.lastActivityAt ? new Date(status.lastActivityAt).toLocaleTimeString("zh-CN", { hour12: false }) : "" };
 }
 
 const sseClients = new Set();
@@ -485,6 +233,7 @@ function broadcastUpdate() {
       const tasks = readSessionTasks(sessId);
       const data = JSON.stringify({
         workspace: currentWorkspace,
+        runtime: runtimeInfo(),
         activeSessionId: sessId,
         sessions,
         tasks,
@@ -509,7 +258,7 @@ function setupWatcher() {
     }
     workspaceWatcher = fs.watch(currentWorkspace, { recursive: true }, (eventType, filename) => {
       if (!filename) return;
-      if (filename.includes("TASKS.txt") || filename.includes("RESPONSE.md") || filename.includes("meta.json")) {
+      if (filename.includes("TASKS.txt") || filename.includes("RESPONSE.md") || filename.includes("meta.json") || filename.includes(".last_interaction") || filename.includes(".stop_requested")) {
         clearTimeout(watchDebounce);
         watchDebounce = setTimeout(() => {
           broadcastUpdate();
@@ -529,8 +278,9 @@ setInterval(() => {
   const tasks = readSessionTasks(currentActive);
   const st = getAgentStatus(tasks.length, currentActive);
   // Observe every session so background activity and heartbeat expiry can reorder the sidebar.
-  const activityKey = listSessions().map(s => `${s.id}:${s.activity}:${s.lastActivityAt}`).join("|");
-  const statusKey = `${st.state}:${st.label}:${st.detail}:${activityKey}`;
+  const activityKey = listSessions().map(s => `${s.id}:${s.activity}:${s.lastInteractionAt}`).join("|");
+  const runtime = runtimeInfo();
+  const statusKey = `${st.state}:${st.label}:${st.detail}:${st.gatewayProtocol}:${activityKey}:${runtime.needsRestart}:${runtime.gatewayBuild}`;
   if (statusKey !== lastBroadcastStatusKey) {
     lastBroadcastStatusKey = statusKey;
     broadcastUpdate();
@@ -573,6 +323,7 @@ const server = http.createServer((req, res) => {
     try {
       res.write(`data: ${JSON.stringify({
         workspace: currentWorkspace,
+        runtime: runtimeInfo(),
         activeSessionId: querySession,
         sessions,
         tasks: queryTasks,
@@ -684,8 +435,8 @@ const server = http.createServer((req, res) => {
         const safeId = sanitizeSessionId(id);
         if (safeId === "default") {
           // Default session cannot be deleted; clear it instead
-          safeWriteFile(path.join(getSessionDir("default"), "TASKS.txt"), "");
-          safeWriteFile(path.join(getSessionDir("default"), "RESPONSE.md"), "");
+          taskStore.editQueue(getSessionDir("default"), "clear");
+          taskStore.withQueueLock(getSessionDir("default"), () => taskStore.atomic(path.join(getSessionDir("default"), "RESPONSE.md"), ""));
         } else {
           const wasActive = getActiveSessionId() === safeId;
           deleteStoredSession(safeId);
@@ -747,187 +498,61 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: "Workspace changed; refusing to read another session directory" }));
       return;
     }
+    if (url.searchParams.has("task_id") && !/^[a-zA-Z0-9_-]{1,100}$/.test(url.searchParams.get("task_id"))) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid task ID" })); return;
+    }
     const tasks = readSessionTasks(sId);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
       workspace: currentWorkspace,
+        runtime: runtimeInfo(),
       activeSessionId: sId,
       sessions: listSessions(),
       tasks,
       taskIds: readSessionTaskIds(sId),
       response: readSessionResponse(sId),
       agentStatus: getAgentStatus(tasks.length, sId),
+      ...(url.searchParams.get("task_id") ? { task: taskStore.taskStatus(getSessionDir(sId), url.searchParams.get("task_id")) } : {}),
     }));
     return;
   }
 
-  // Add a task
-  if (url.pathname === "/api/add-task" && req.method === "POST") {
+  // Every task mutation uses the same cross-process lock as gateway dispatch/completion.
+  const taskRoutes = ["/api/add-task", "/api/update-task", "/api/delete-task", "/api/clear-tasks", "/api/clear-response"];
+  if (taskRoutes.includes(url.pathname) && req.method === "POST") {
     let body = "";
     req.on("data", chunk => body += chunk);
     req.on("end", () => {
       try {
-        const { task, session_id, session_dir } = JSON.parse(body || "{}");
-        const sId = (session_id && session_id.trim()) ? sanitizeSessionId(session_id) : getActiveSessionId();
-        if (session_dir && path.resolve(session_dir) !== path.resolve(currentWorkspace, "sessions", sId)) {
-          res.writeHead(409, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Workspace changed; refusing to enqueue in another session directory" }));
-          return;
+        const input = JSON.parse(body || "{}");
+        const sId = input.session_id ? sanitizeSessionId(input.session_id) : getActiveSessionId();
+        const dir = getSessionDir(sId);
+        if (input.session_dir && path.resolve(input.session_dir) !== path.resolve(dir)) {
+          throw Object.assign(new Error("Workspace changed; refusing another session directory"), { status: 409 });
         }
-        if (!listSessions().some(s => s.id === sId)) throw new Error("Session no longer exists");
-        if (task && task.trim()) {
-          const singleLineTask = task.trim().replace(/\r?\n+/g, " ");
-          const sessionDir = getSessionDir(sId);
-          const tasksPath = path.join(sessionDir, "TASKS.txt");
-
-          // Update cache so readSessionTasks knows this addition is queued by user
-          const prev = sessionTasksCache.get(sId) || [];
-          // If user sends /exit, mark session as stopped immediately
-          const stoppedPath = path.join(sessionDir, ".stopped");
-          if (singleLineTask === "/exit" || singleLineTask === "__FINISH__") {
-            safeWriteFile(stoppedPath, String(Date.now()));
-          } else if (fs.existsSync(stoppedPath)) {
-            try { fs.unlinkSync(stoppedPath); } catch {}
-          }
-
-          safeAppendFile(tasksPath, makeTaskLine(singleLineTask) + "\n");
-
-          // Note: Do NOT append to RESPONSE.md here!
-          // Tasks stay in the left queue until the model actually pops them!
-
-          // Update meta
-          const meta = getSessionMeta(sId);
-          meta.updatedAt = Date.now();
-          // Auto-name untitled session based on the first task
-          if (meta.name === "新对话" || meta.name === "新会话" || meta.name === sId) {
-            meta.name = singleLineTask.slice(0, 24);
-          }
-          saveSessionMeta(sId, meta);
-          setActiveSessionId(sId);
-
-          broadcastUpdate();
+        if (!fs.existsSync(path.join(dir, "meta.json")) || getSessionMeta(sId).deleted) {
+          throw Object.assign(new Error("Session no longer exists"), { status: 410 });
         }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId), sessions: listSessions() }));
-      } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-
-  // Update a single task in queue (by task id for stability under concurrent pops)
-  if (url.pathname === "/api/update-task" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
-      try {
-        const { session_id, id, task } = JSON.parse(body || "{}");
-        const sId = sanitizeSessionId(session_id);
-        const p = path.join(getSessionDir(sId), "TASKS.txt");
-        const raw = safeReadFile(p) || "";
-        const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-        const taskId = String(id || "").trim();
-        const cleanTask = typeof task === "string" ? task.trim().replace(/\r?\n+/g, " ") : "";
-        if (taskId && cleanTask) {
-          const idx = lines.findIndex(l => getTaskLineId(l) === taskId);
-          if (idx >= 0) {
-            lines[idx] = makeTaskLine(cleanTask);
-            isClearingTasks.add(sId);
-            sessionTasksCache.set(sId, getTaskContents(lines));
-            safeWriteFile(p, serializeTaskLines(lines));
-            setTimeout(() => isClearingTasks.delete(sId), 500);
-            broadcastUpdate();
-          }
+        let extra = {};
+        if (url.pathname === "/api/add-task") {
+          extra = taskStore.enqueue(dir, input.task, input.task_id);
+        } else if (url.pathname === "/api/update-task") {
+          taskStore.editQueue(dir, "edit", [String(input.id || "")], String(input.task || ""));
+        } else if (url.pathname === "/api/delete-task") {
+          const ids = Array.isArray(input.ids) ? input.ids.map(String) : [String(input.id || "")];
+          taskStore.editQueue(dir, "delete", ids);
+        } else if (url.pathname === "/api/clear-tasks") {
+          taskStore.editQueue(dir, "clear");
+        } else {
+          taskStore.withQueueLock(dir, () => taskStore.atomic(path.join(dir, "RESPONSE.md"), ""));
         }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId) }));
-      } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-
-  // Delete a specific task or multiple tasks from queue (by task id for stability)
-  if (url.pathname === "/api/delete-task" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
-      try {
-        const { session_id, id, ids } = JSON.parse(body || "{}");
-        const sId = sanitizeSessionId(session_id);
-        const p = path.join(getSessionDir(sId), "TASKS.txt");
-        const raw = safeReadFile(p) || "";
-        let lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
-        const toDelete = new Set();
-        if (Array.isArray(ids)) {
-          ids.forEach(i => toDelete.add(String(i)));
-        } else if (id !== undefined && id !== null) {
-          toDelete.add(String(id));
-        }
-
-        if (toDelete.size > 0) {
-          lines = lines.filter(l => !toDelete.has(getTaskLineId(l)));
-          isClearingTasks.add(sId);
-          sessionTasksCache.set(sId, getTaskContents(lines));
-          safeWriteFile(p, serializeTaskLines(lines));
-          setTimeout(() => isClearingTasks.delete(sId), 500);
-          broadcastUpdate();
-        }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId) }));
-      } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-
-  // Clear tasks
-  if (url.pathname === "/api/clear-tasks" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
-      try {
-        const { session_id } = JSON.parse(body || "{}");
-        const sId = sanitizeSessionId(session_id);
-        isClearingTasks.add(sId);
-        sessionTasksCache.set(sId, []);
-        const p = path.join(getSessionDir(sId), "TASKS.txt");
-        safeWriteFile(p, "");
-        setTimeout(() => isClearingTasks.delete(sId), 500);
         broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-
-  // Clear response
-  if (url.pathname === "/api/clear-response" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
-      try {
-        const { session_id } = JSON.parse(body || "{}");
-        const sId = sanitizeSessionId(session_id);
-        const p = path.join(getSessionDir(sId), "RESPONSE.md");
-        safeWriteFile(p, "");
-        broadcastUpdate();
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: e.message }));
+        res.end(JSON.stringify({ success: true, ...extra, tasks: readSessionTasks(sId), taskIds: readSessionTaskIds(sId), sessions: listSessions() }));
+      } catch (error) {
+        res.writeHead(error.status || 400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: error.message }));
       }
     });
     return;
@@ -981,14 +606,14 @@ const server = http.createServer((req, res) => {
     req.on("end", () => {
       try {
         const { workspace } = JSON.parse(body || "{}");
-        if (workspace && fs.existsSync(workspace)) {
+        if (!workspace || !path.isAbsolute(workspace) || !fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
+          throw new Error("请选择存在的工作区绝对目录");
+        }
+        if (workspace) {
           currentWorkspace = path.resolve(workspace);
           ensureDefaultSession();
           setupWatcher();
-          // Write pointer so the MCP gateway can discover the active workspace across processes.
-          try {
-            safeWriteFile(path.join("D:\\Project\\Workspace", ".workspace_pointer"), currentWorkspace);
-          } catch {}
+          // Running workers retain their native cwd; changing the UI workspace cannot rebind them.
           broadcastUpdate();
         }
         res.writeHead(200, { "Content-Type": "application/json" });
