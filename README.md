@@ -15,3 +15,7 @@
 bun server.js
 ```
 访问：`http://127.0.0.1:17888`
+
+可选环境变量：`SIXPRO_WORKSPACE`（工作区，默认 `D:\Project\Workspace`）、`SIXPRO_GATEWAY_ROOT`（网关源码目录）、`CODEX_BIN`（`ask-6pro spawn` 使用的 codex.js）。
+
+原 turn 意外中断、会话显示“连接状态待确认”时：点击“重置执行端”把未完成任务退回队首，或直接启动新的 turn——新 turn 会等待并在重置/停止后自动接手，不会白白消耗一次额度。协议细节见 `TASK_PROTOCOL.md`。

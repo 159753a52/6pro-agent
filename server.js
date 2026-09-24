@@ -5,7 +5,8 @@ const taskStore = require("./lib/task-store.cjs");
 const { runtimeInfo } = require("./lib/runtime-info.cjs");
 
 const PORT = 17888;
-let currentWorkspace = path.resolve("D:\\Project\\Workspace");
+let currentWorkspace = path.resolve(process.env.SIXPRO_WORKSPACE || "D:\\Project\\Workspace");
+const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 // Ensure workspace directory exists
 if (!fs.existsSync(currentWorkspace)) {
@@ -66,6 +67,20 @@ function sanitizeSessionId(id) {
   const isReserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(clean);
   if (!clean || isReserved) return "default";
   return clean.slice(0, 64);
+}
+
+// Explicit IDs from clients must be valid; rewriting them could address a different session.
+function parseSessionId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(value) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(value)) {
+    throw Object.assign(new Error("Invalid session ID"), { status: 400 });
+  }
+  return value;
+}
+
+function sessionExists(sessionId) {
+  const dir = getSessionDir(sessionId);
+  return fs.existsSync(path.join(dir, "meta.json")) && !getSessionMeta(sessionId).deleted;
 }
 
 function getSessionDir(sessionId) {
@@ -132,8 +147,8 @@ function getSessionActivity(sessionId, now = Date.now()) {
   const hasTask = Boolean(safeReadFile(path.join(dir, ".active_task")).trim() || taskStore.json(path.join(dir, ".active_task.json")));
   const stopping = Boolean(safeReadFile(path.join(dir, ".stop_requested")).trim());
   const stopped = Boolean(safeReadFile(path.join(dir, ".stopped")).trim());
-  const activity = stopping ? "stopping" : stopped ? "offline" : age < 45000 ? (hasTask ? "running" : "waiting") : hasTask ? "unknown" : "offline";
-  return { activity, lastActivityAt, lastInteractionAt: Number(safeReadFile(path.join(dir, ".last_interaction"))) || 0 };
+  const activity = stopping ? "stopping" : stopped ? "offline" : age < taskStore.WORKER_LIVE_MS ? (hasTask ? "running" : "waiting") : hasTask ? "unknown" : "offline";
+  return { activity, hasTask, lastActivityAt, lastInteractionAt: Number(safeReadFile(path.join(dir, ".last_interaction"))) || 0 };
 }
 
 function listSessions() {
@@ -208,7 +223,7 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
     running: ["正在执行任务", "该会话有执行中任务，且最近 45 秒内收到心跳。"],
     waiting: ["在线待命", "该会话心跳正常，等待领取任务。"],
     stopping: ["已请求停止 · 等待执行端确认", "停止请求将在执行端下次领取任务时确认；当前命令可能仍在执行。"],
-    unknown: ["连接状态待确认", "执行中任务仍保留，但心跳已过期；无法确认模型是否还在运行。"],
+    unknown: ["连接状态待确认", "执行中任务仍保留，但心跳已过期；无法确认模型是否还在运行。若原 turn 已中断，可重置执行端把任务退回队首，或请求停止；已启动的新 turn 会自动接手，不会白白结束。"],
     offline: ["离线 / 已停止", "当前没有有效心跳。启动或续接后才能领取待办任务。"],
   };
   const [label, summary] = descriptions[status.activity];
@@ -217,10 +232,52 @@ function getAgentStatus(tasksCount = 0, sessionId = "default") {
   const worker = taskStore.json(path.join(dir, ".worker.json"));
   const detail = current ? `${summary} 当前任务：${current.content}` : summary;
   return { state: status.activity, label, detail, tasksCount, sessionId, gatewayProtocol: worker?.protocol || null,
+    resettable: status.activity === "unknown" && !taskStore.workerLive(worker),
     lastActive: status.lastActivityAt ? new Date(status.lastActivityAt).toLocaleTimeString("zh-CN", { hour12: false }) : "" };
 }
 
+function readBody(req, res, onBody) {
+  const chunks = [];
+  let size = 0;
+  let aborted = false;
+  req.on("data", chunk => {
+    if (aborted) return;
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      aborted = true;
+      res.writeHead(413, { "Content-Type": "application/json", Connection: "close" });
+      res.end(JSON.stringify({ error: "Request body too large" }));
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  // Decode once so multi-byte characters split across chunks stay intact.
+  req.on("end", () => { if (!aborted) onBody(Buffer.concat(chunks).toString("utf8")); });
+}
+
+// The API drives a model with local tool access, so only same-origin JSON requests are accepted.
+// The Host check blocks DNS rebinding; requiring JSON forces a CORS preflight that is never granted.
+function rejectForeignRequest(req) {
+  const host = req.headers.host || "";
+  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) return "Host not allowed";
+  const origin = req.headers.origin;
+  if (origin && origin !== `http://${host}`) return "Cross-origin request refused";
+  if (req.method === "POST" && !/^application\/json\b/i.test(req.headers["content-type"] || "")) return "Content-Type must be application/json";
+  return "";
+}
+
 const sseClients = new Set();
+
+// RESPONSE.md grows without bound; stream it to a subscriber only when it changed.
+function responseKey(sessionId) {
+  try {
+    const stat = fs.statSync(path.join(getSessionDir(sessionId), "RESPONSE.md"));
+    return `${sessionId}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return `${sessionId}:none`;
+  }
+}
 
 function broadcastUpdate() {
   const currentActive = getActiveSessionId();
@@ -231,18 +288,22 @@ function broadcastUpdate() {
       const sessId = sessions.some(s => s.id === requestedId) ? requestedId : currentActive;
       client._targetSessionId = sessId;
       const tasks = readSessionTasks(sessId);
-      const data = JSON.stringify({
+      const payload = {
         workspace: currentWorkspace,
         runtime: runtimeInfo(),
         activeSessionId: sessId,
         sessions,
         tasks,
         taskIds: readSessionTaskIds(sessId),
-        response: readSessionResponse(sessId),
         agentStatus: getAgentStatus(tasks.length, sessId),
         epoch: Date.now(),
-      });
-      client.write(`data: ${data}\n\n`);
+      };
+      const key = responseKey(sessId);
+      if (client._responseKey !== key) {
+        payload.response = readSessionResponse(sessId);
+        client._responseKey = key;
+      }
+      client.write(`data: ${JSON.stringify(payload)}\n\n`);
     } catch {}
   }
 }
@@ -290,20 +351,16 @@ setInterval(() => {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
 
-  // CORS headers
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    res.end();
+  const refused = rejectForeignRequest(req);
+  if (refused || req.method === "OPTIONS") {
+    res.writeHead(refused ? 403 : 204, { "Content-Type": "application/json" });
+    res.end(refused ? JSON.stringify({ error: refused }) : undefined);
     return;
   }
 
   // SSE stream
   if (url.pathname === "/api/events") {
-    const requestedSession = sanitizeSessionId(url.searchParams.get("session_id"));
+    const requestedSession = /^[a-zA-Z0-9_-]{1,64}$/.test(url.searchParams.get("session_id") || "") ? url.searchParams.get("session_id") : "";
     const querySession = listSessions().some(s => s.id === requestedSession) ? requestedSession : getActiveSessionId();
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -311,6 +368,7 @@ const server = http.createServer((req, res) => {
       "Connection": "keep-alive",
     });
     res._targetSessionId = querySession;
+    res._responseKey = responseKey(querySession);
     sseClients.add(res);
 
     res.on("error", () => {
@@ -344,19 +402,17 @@ const server = http.createServer((req, res) => {
 
   // Switch active session
   if (url.pathname === "/api/sessions/switch" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const { session_id } = JSON.parse(body || "{}");
-        const safeId = sanitizeSessionId(session_id);
+        const safeId = parseSessionId(session_id) || "default";
         if (!listSessions().some(s => s.id === safeId)) throw new Error("Session no longer exists");
         setActiveSessionId(safeId);
         broadcastUpdate();
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, activeSessionId: safeId, tasks: readSessionTasks(safeId), response: readSessionResponse(safeId) }));
       } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
+        res.writeHead(e.status || 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -372,12 +428,10 @@ const server = http.createServer((req, res) => {
 
   // Create session
   if (url.pathname === "/api/sessions/create" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const { id, name } = JSON.parse(body || "{}");
-        const safeId = sanitizeSessionId(id || `sess_${Date.now().toString(36)}`);
+        const safeId = parseSessionId(id) || `sess_${Date.now().toString(36)}`;
         const sessionDir = getSessionDir(safeId);
         if (fs.existsSync(sessionDir)) throw new Error("Session ID already exists or was deleted; use a new ID");
         fs.mkdirSync(sessionDir, { recursive: true });
@@ -393,7 +447,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, session: meta, sessionDir, sessions: listSessions() }));
       } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
+        res.writeHead(e.status || 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -402,12 +456,11 @@ const server = http.createServer((req, res) => {
 
   // Rename session
   if (url.pathname === "/api/sessions/rename" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const { id, name } = JSON.parse(body || "{}");
-        const safeId = sanitizeSessionId(id);
+        const safeId = parseSessionId(id) || "default";
+        if (!sessionExists(safeId)) throw Object.assign(new Error("Session no longer exists"), { status: 410 });
         const meta = getSessionMeta(safeId);
         if (name && name.trim()) {
           meta.name = name.trim().slice(0, 40);
@@ -418,7 +471,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, session: meta, sessions: listSessions() }));
       } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
+        res.writeHead(e.status || 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -427,12 +480,10 @@ const server = http.createServer((req, res) => {
 
   // Delete session while retaining a durable tombstone for stale readers and workers.
   if (url.pathname === "/api/sessions/delete" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const { id } = JSON.parse(body || "{}");
-        const safeId = sanitizeSessionId(id);
+        const safeId = parseSessionId(id) || "default";
         if (safeId === "default") {
           // Default session cannot be deleted; clear it instead
           taskStore.editQueue(getSessionDir("default"), "clear");
@@ -450,7 +501,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, sessions: listSessions() }));
       } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
+        res.writeHead(e.status || 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -462,7 +513,8 @@ const server = http.createServer((req, res) => {
     try {
       const sessions = listSessions();
       for (const s of sessions) {
-        if (s.id !== "default" && s.taskCount === 0) {
+        // A session with a claimed task or a connected worker is not empty, even with no queue or report yet.
+        if (s.id !== "default" && s.taskCount === 0 && !s.hasTask && s.activity === "offline") {
           const resp = readSessionResponse(s.id);
           if (!resp || !resp.trim()) {
             deleteStoredSession(s.id);
@@ -477,7 +529,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ success: true, sessions: listSessions() }));
     } catch (e) {
-      res.writeHead(400, { "Content-Type": "application/json" });
+      res.writeHead(e.status || 400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: e.message }));
     }
     return;
@@ -486,7 +538,13 @@ const server = http.createServer((req, res) => {
   // Get current state
   if (url.pathname === "/api/info" && req.method === "GET") {
     const paramSess = url.searchParams.get("session_id");
-    const sId = (paramSess && paramSess.trim()) ? sanitizeSessionId(paramSess) : getActiveSessionId();
+    let sId;
+    try { sId = parseSessionId(paramSess) || getActiveSessionId(); }
+    catch (error) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: error.message }));
+      return;
+    }
     if (!listSessions().some(s => s.id === sId)) {
       res.writeHead(410, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Session no longer exists" }));
@@ -519,14 +577,12 @@ const server = http.createServer((req, res) => {
   }
 
   // Every task mutation uses the same cross-process lock as gateway dispatch/completion.
-  const taskRoutes = ["/api/add-task", "/api/update-task", "/api/delete-task", "/api/clear-tasks", "/api/clear-response"];
+  const taskRoutes = ["/api/add-task", "/api/update-task", "/api/delete-task", "/api/clear-tasks", "/api/clear-response", "/api/sessions/reset-worker"];
   if (taskRoutes.includes(url.pathname) && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const input = JSON.parse(body || "{}");
-        const sId = input.session_id ? sanitizeSessionId(input.session_id) : getActiveSessionId();
+        const sId = parseSessionId(input.session_id) || getActiveSessionId();
         const dir = getSessionDir(sId);
         if (input.session_dir && path.resolve(input.session_dir) !== path.resolve(dir)) {
           throw Object.assign(new Error("Workspace changed; refusing another session directory"), { status: 409 });
@@ -544,6 +600,8 @@ const server = http.createServer((req, res) => {
           taskStore.editQueue(dir, "delete", ids);
         } else if (url.pathname === "/api/clear-tasks") {
           taskStore.editQueue(dir, "clear");
+        } else if (url.pathname === "/api/sessions/reset-worker") {
+          extra = taskStore.releaseWorker(dir);
         } else {
           taskStore.withQueueLock(dir, () => taskStore.atomic(path.join(dir, "RESPONSE.md"), ""));
         }
@@ -560,13 +618,12 @@ const server = http.createServer((req, res) => {
 
   // Upload image (Supports base64 clipboard paste and file pick)
   if (url.pathname === "/api/upload-image" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const { image, session_id, filename } = JSON.parse(body || "{}");
         if (!image || typeof image !== "string") throw new Error("Image data is required");
-        const sId = sanitizeSessionId(session_id);
+        const sId = parseSessionId(session_id) || getActiveSessionId();
+        if (!sessionExists(sId)) throw Object.assign(new Error("Session no longer exists"), { status: 410 });
         const match = image.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
         if (!match) throw new Error("Invalid base64 image data");
         let ext = match[1].toLowerCase();
@@ -592,7 +649,7 @@ const server = http.createServer((req, res) => {
           size: buffer.length,
         }));
       } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
+        res.writeHead(e.status || 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -601,9 +658,7 @@ const server = http.createServer((req, res) => {
 
   // Set workspace
   if (url.pathname === "/api/set-workspace" && req.method === "POST") {
-    let body = "";
-    req.on("data", chunk => body += chunk);
-    req.on("end", () => {
+    readBody(req, res, body => {
       try {
         const { workspace } = JSON.parse(body || "{}");
         if (!workspace || !path.isAbsolute(workspace) || !fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
@@ -619,7 +674,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ success: true, workspace: currentWorkspace }));
       } catch (e) {
-        res.writeHead(400, { "Content-Type": "application/json" });
+        res.writeHead(e.status || 400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });

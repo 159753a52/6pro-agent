@@ -51,3 +51,28 @@ test('heartbeat-only updates do not replace sidebar rows', () => {
     assert.equal(writes, 2);
   `, { assert });
 });
+test('session names cannot break out of inline handlers and rendered markdown is sanitized', () => {
+  const escapeStart = html.indexOf('    function escapeHtml(str) {');
+  const escapeEnd = html.indexOf('    function fallbackCopyText', escapeStart);
+  const start = html.indexOf('    let lastSessionRenderKey =');
+  const end = html.indexOf('    // Render Task List', start);
+  const markdownStart = html.indexOf('    function renderMarkdown(markdown) {');
+  const markdownEnd = html.indexOf('    function formatAssistantBody', markdownStart);
+  vm.runInNewContext(`
+    let currentSessionsCache, activeSessionId = 'a', isDraftNewSession = false, markup = '';
+    const elSessionList = { set innerHTML(value) { markup = value; } };
+    ${html.slice(escapeStart, escapeEnd)}
+    ${html.slice(start, end)}
+    renderSessions([{ id: 'a', name: "x'); alert(1); //", activity: 'offline', taskCount: 0 }]);
+    const handlers = markup.match(/onclick="[^"]*"/g);
+    assert.ok(handlers.every(handler => !handler.includes('alert')));
+    assert.match(markup, /data-name="x&#39;\\); alert\\(1\\); \\/\\/"/);
+    const marked = { parse: text => text };
+    const window = { DOMPurify: { sanitize: value => 'clean:' + value } };
+    const DOMPurify = window.DOMPurify;
+    ${html.slice(markdownStart, markdownEnd)}
+    assert.equal(renderMarkdown('<img src=x onerror=alert(1)>'), 'clean:<img src=x onerror=alert(1)>');
+    window.DOMPurify = undefined;
+    assert.equal(renderMarkdown('<b>'), '<pre>&lt;b&gt;</pre>');
+  `, { assert });
+});

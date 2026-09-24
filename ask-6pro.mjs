@@ -98,6 +98,10 @@ async function cmdSend(taskText, sessionId = "") {
     process.exit(1);
   }
   const res = await sendTask(taskText.trim(), sessionId);
+  if (res.stopRequested) {
+    console.log(res.stopped ? "✅ 当前没有在线执行端，会话已直接停止。" : "✅ 已请求停止，执行端将在下次领取任务时确认。");
+    return;
+  }
   console.log(`✅ 任务已成功加入待办队列！`);
   console.log(`当前队列剩余任务数: ${res.tasks.length}`);
 }
@@ -143,6 +147,10 @@ async function cmdAsk(question, timeoutSec = 300, sessionId = "") {
   console.log(`\n🚀 正在向 6Pro 提问 [会话: ${sId}]...`);
   console.log(`❓ 问题: ${question}`);
   const submitted = await sendTask(question.trim(), sId, sessionDir);
+  if (submitted.stopRequested) {
+    console.log(submitted.stopped ? "✅ 当前没有在线执行端，会话已直接停止。" : "✅ 已请求停止，执行端将在下次领取任务时确认。");
+    return "";
+  }
   console.log(`⏳ 任务已入队，等待 6Pro 领取并开始推理...\n`);
 
   return await waitForAnswer(sId, submitted.taskId, timeoutSec, sessionDir);
@@ -190,7 +198,7 @@ async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300) {
 
   // 4. 后台无头拉起 Codex CLI，向网关发起握手
   console.log(`🚀 正在通过无头模式拉起 Codex CLI (chatgpt-web/high)...`);
-  const codexBin = "D:\\tools\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js";
+  const codexBin = process.env.CODEX_BIN || "D:\\tools\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js";
   const logPath = join(sessionDir, "codex-cli.log");
   const logFd = openSync(logPath, "a");
   const startedAt = Date.now();
@@ -232,14 +240,6 @@ async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300) {
   } else {
     console.log(`✅ 新会话建联指令已在后台拉起，您可使用 ask-6pro status --session ${sessionId} 查看状态。`);
   }
-}
-
-function extractAnswerText(text) {
-  if (!text) return "";
-  let clean = text.replace(/###\s*用户任务\s*\[[0-9:]*\][\s\S]*?(?=###\s*阶段汇报|$)/g, "");
-  clean = clean.replace(/###\s*阶段汇报\s*\[[0-9:]*\]/g, "");
-  clean = clean.replace(/^(?:(?:Done|Step complete|阶段任务已完成)[,\s]*)?(?:see|详见)\s*(?:本地\s*)?RESPONSE\.md\s*$/gim, "");
-  return clean.trim();
 }
 
 async function cmdHistory(sessionId = "") {

@@ -49,7 +49,7 @@ test('clear only cancels queued tasks; stop requires worker acknowledgement and 
 test('deletion stops dispatch and unfinished work cannot be taken over by another worker', () => fixture(dir => {
   store.enqueue(dir, 'task', 'a');
   store.poll(dir, 'worker');
-  assert.throws(() => store.poll(dir, 'other'), /owns the unfinished/);
+  assert.throws(() => store.poll(dir, 'other'), /live worker/);
   store.deleteSession(dir);
   assert.equal(store.poll(dir, 'worker').has_next, false);
   assert.equal(store.taskStatus(dir, 'a').state, 'cancelled');
@@ -69,4 +69,70 @@ test('queue write failures are surfaced and a completion crash is recovered with
   assert.equal(store.poll(dir, 'worker').next_task, '__POLL__');
   assert.equal(store.taskStatus(dir, 'a').state, 'completed');
   assert.match(store.read(path.join(dir, 'RESPONSE.md')), /ok/);
+}));
+function expireWorker(dir) {
+  const file = path.join(dir, '.worker.json');
+  const worker = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...worker, seenAt: worker.seenAt - store.WORKER_LIVE_MS - 1 }));
+}
+test('a new turn waits for a silent turn, then a reset requeues the unfinished task to it', () => fixture(dir => {
+  store.enqueue(dir, 'first', 'a');
+  store.enqueue(dir, 'second', 'b');
+  assert.equal(store.poll(dir, 'dead').task_id, 'a');
+  assert.throws(() => store.releaseWorker(dir), /心跳/);
+  expireWorker(dir);
+  const waiting = store.poll(dir, 'fresh');
+  assert.equal(waiting.has_next, true);
+  assert.equal(waiting.next_task, '__POLL__');
+  assert.equal(store.taskStatus(dir, 'a').state, 'running', 'waiting must not steal or cancel the claim');
+  assert.equal(store.releaseWorker(dir).requeuedTaskId, 'a');
+  assert.deepEqual(store.queue(dir).map(t => t.id), ['a', 'b']);
+  assert.equal(store.poll(dir, 'fresh').task_id, 'a');
+  assert.throws(() => store.poll(dir, 'dead', { task_id: 'a', response_text: 'late' }), /live worker/);
+  assert.equal(store.poll(dir, 'fresh', { task_id: 'a', response_text: 'done' }).task_id, 'b');
+  assert.equal(store.taskStatus(dir, 'a').response, 'done');
+}));
+test('a reset task can still be reported by the turn that executed it before anyone reclaims it', () => fixture(dir => {
+  store.enqueue(dir, 'slow', 'a');
+  store.poll(dir, 'slow-turn');
+  expireWorker(dir);
+  store.releaseWorker(dir);
+  assert.equal(store.poll(dir, 'slow-turn', { task_id: 'a', response_text: 'finished' }).next_task, '__POLL__');
+  assert.equal(store.taskStatus(dir, 'a').response, 'finished');
+  assert.equal(store.queue(dir).length, 0);
+}));
+test('a stop aimed at a silent turn is acknowledged by the next turn, which keeps serving', () => fixture(dir => {
+  store.enqueue(dir, 'abandoned', 'a');
+  store.poll(dir, 'dead');
+  expireWorker(dir);
+  store.enqueue(dir, '/exit');
+  store.enqueue(dir, 'accepted while stopping', 'b');
+  const next = store.poll(dir, 'fresh');
+  assert.equal(next.has_next, true);
+  assert.equal(next.task_id, 'b');
+  assert.equal(store.taskStatus(dir, 'a').state, 'cancelled');
+  assert.equal(store.read(path.join(dir, '.stop_requested')), '');
+}));
+test('a stop with no worker to acknowledge it settles immediately and does not end the next turn', () => fixture(dir => {
+  assert.deepEqual(store.enqueue(dir, '/exit'), { stopRequested: true, stopped: true });
+  assert.equal(store.read(path.join(dir, '.stop_requested')), '');
+  assert.ok(store.read(path.join(dir, '.stopped')));
+  store.enqueue(dir, 'next job', 'a');
+  assert.equal(store.poll(dir, 'new-turn').task_id, 'a');
+}));
+test('multi-line tasks keep their formatting and legacy queue lines migrate without growing pipes', () => fixture(dir => {
+  const code = 'fix this:\r\n  def f():\n      return 1\n';
+  store.enqueue(dir, code, 'code');
+  store.editQueue(dir, 'edit', ['code'], code + '\n# edited');
+  assert.equal(store.queue(dir)[0].content, 'fix this:\n  def f():\n      return 1\n\n# edited');
+  fs.writeFileSync(path.join(dir, 'TASKS.txt'), 'legacy raw\n||corrupted legacy\nold|id task\n');
+  store.enqueue(dir, 'new', 'n1');
+  store.enqueue(dir, 'newer', 'n2');
+  const tasks = store.queue(dir);
+  assert.deepEqual(tasks.map(t => t.content), ['legacy raw', 'corrupted legacy', 'id task', 'new', 'newer']);
+  assert.ok(tasks.every(t => /^[a-zA-Z0-9_-]+$/.test(t.id)));
+  assert.equal(tasks[2].id, 'old');
+  const claimed = store.poll(dir, 'worker');
+  assert.equal(claimed.next_task, 'legacy raw');
+  assert.equal(claimed.task_id, tasks[0].id);
 }));

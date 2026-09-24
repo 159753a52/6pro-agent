@@ -95,8 +95,8 @@ test('real HTTP and CLI use exact task results, coordinate queue mutations and i
     store.poll(dir, 'worker');
     const stopped = (await request('/api/info?session_id=session_a')).data;
     assert.equal(stopped.agentStatus.state, 'offline');
-    assert.equal(stopped.runtime.taskProtocol, 2);
-    assert.equal(stopped.agentStatus.gatewayProtocol, 2);
+    assert.equal(stopped.runtime.taskProtocol, store.PROTOCOL_VERSION);
+    assert.equal(stopped.agentStatus.gatewayProtocol, store.PROTOCOL_VERSION);
 
     const secondWorkspace = path.join(root, 'other-workspace');
     fs.mkdirSync(secondWorkspace);

@@ -6,6 +6,7 @@
   <title>Codex - 6Pro 额度复用助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
@@ -424,6 +425,8 @@
     let currentSessionsCache = [];
     let currentTasksCache = [];
     let currentTaskIdsCache = [];
+    let currentResponseText = "";
+    let lastResponseRenderKey = "";
     let isTaskSelectMode = false;
     let selectedTaskIndices = new Set();
     const sessionBus = window.BroadcastChannel ? new BroadcastChannel("6pro_session_bus") : null;
@@ -448,8 +451,10 @@
       }
     }
 
-    function escapeHtml(str) {
-      return (str || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    // Model output and task text are untrusted: strip scripts/handlers from rendered markdown.
+    function renderMarkdown(markdown) {
+      const html = marked.parse(markdown);
+      return window.DOMPurify ? DOMPurify.sanitize(html) : `<pre>${escapeHtml(markdown)}</pre>`;
     }
 
     function formatAssistantBody(text) {
@@ -484,7 +489,7 @@
         processedLines.push(lines[i]);
       }
 
-      return marked.parse(processedLines.join("\n"));
+      return renderMarkdown(processedLines.join("\n"));
     }
 
     // Native Codex Tool Call, Stage Divider & User Message Formatter
@@ -525,7 +530,7 @@
               }
             }
 
-            const parsedBody = marked.parse(userPromptText);
+            const parsedBody = renderMarkdown(userPromptText);
             htmlParts.push(`
               <div class="codex-user-turn my-8 flex justify-end">
                 <div class="max-w-[92%] sm:max-w-[85%] w-full bg-[#f4f4f6] border border-[#e4e4e7] rounded-2xl px-5 py-4 shadow-sm transition hover:border-[#d4d4d8]">
@@ -674,18 +679,12 @@
       if (!badge || !dot || !label || !status) return;
 
       badge.onclick = null;
-      if (status.state === "timeout_1h" || status.state === "waiting_resume") {
+      if (status.state === "unknown") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-900 border border-amber-300 shadow-xs transition-all duration-300 select-none cursor-pointer hover:bg-amber-100";
         dot.className = "w-2 h-2 rounded-full bg-amber-500 animate-pulse";
-        label.textContent = status.label || "⚠️ 网页端已停止 · 待发指令接力";
-        badge.title = status.detail || "点击复制续接词并在 ChatGPT 网页端发送";
-        badge.onclick = () => copyCurrentResumePrompt(badge);
-      } else if (status.state === "turn_ended") {
-        badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-100 text-zinc-700 border border-zinc-300 shadow-xs transition-all duration-300 select-none cursor-pointer hover:bg-zinc-200";
-        dot.className = "w-2 h-2 rounded-full bg-zinc-400";
-        label.textContent = status.label || "● 网页端已停止生成 · 待命";
-        badge.title = status.detail || "点击复制续接指令并在网页端发送";
-        badge.onclick = () => copyCurrentResumePrompt(badge);
+        label.textContent = status.label || "连接状态待确认";
+        badge.title = "点击复制续接启动词；确认原 turn 已中断时可在下方重置执行端";
+        badge.onclick = () => { currentResumePromptText = buildSessionPrompt(activeSessionId); copyCurrentResumePrompt(badge); };
       } else if (status.state === "waiting") {
         badge.className = "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200 shadow-xs transition-all duration-300 select-none cursor-default";
         dot.className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
@@ -706,69 +705,23 @@
 
     function renderStatusCard(status) {
       if (!status) return "";
-      if (["unknown", "stopping", "offline"].includes(status.state)) {
-        return `<div class="my-4 p-4 rounded-xl border border-zinc-200 bg-zinc-50"><strong>${escapeHtml(status.label)}</strong><p class="text-sm mt-2">${escapeHtml(status.detail)}</p></div>`;
-      }
-      if (status.state === "timeout_1h" || status.state === "waiting_resume" || status.state === "turn_ended") {
-        currentResumePromptText = status.resumePrompt || `你当前继续绑定本地会话【${activeSessionId}】。请立即调用 MCP 工具 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="Idle") 领取待办任务并继续执行。`;
-        const isTurnEnded = status.state === "turn_ended";
-        const cardTitle = status.title || (isTurnEnded ? "检测到模型在网页端已停止生成" : "检测到模型在网页端已停止生成（待命接力）");
-        const cardTag = status.tag || "Turn Ended";
-        const cardDetail = status.detail || (isTurnEnded ? "模型在网页端上一轮推导已停止，当前暂无待办任务。在下方发送新任务，或在网页端发送指令即可唤醒！" : "模型上一轮推导已停笔。未完成任务完好保留在待办队列中。");
-        
-        const containerClasses = isTurnEnded
-          ? "mt-8 mb-4 p-4 rounded-xl bg-zinc-50 border border-zinc-300/80 shadow-xs flex flex-col gap-3 transition-all select-none"
-          : "mt-8 mb-4 p-4 rounded-xl bg-amber-50/95 border-2 border-amber-300 shadow-sm flex flex-col gap-3 transition-all select-none";
-        const iconContainer = isTurnEnded
-          ? '<div class="p-2 rounded-lg bg-zinc-200 text-zinc-700 shrink-0 mt-0.5"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg></div>'
-          : '<div class="p-2 rounded-lg bg-amber-100 text-amber-800 shrink-0 mt-0.5"><svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg></div>';
-        const titleColor = isTurnEnded ? "text-zinc-900" : "text-amber-950";
-        const tagClasses = isTurnEnded ? "bg-zinc-200 text-zinc-800" : "bg-amber-200/80 text-amber-900";
-        const detailColor = isTurnEnded ? "text-zinc-600" : "text-amber-800";
-        const btnClasses = isTurnEnded
-          ? "bg-zinc-800 hover:bg-zinc-900 active:scale-95 text-white"
-          : "bg-amber-600 hover:bg-amber-700 active:scale-95 text-white";
-        const boxBg = isTurnEnded ? "bg-white border-zinc-200 text-zinc-800" : "bg-white border-amber-200 text-amber-950";
-        const tipText = isTurnEnded
-          ? "👉 唤醒提示：随时在下方发送新任务；或在刚刚的 ChatGPT 网页端发送“继续”（或粘贴复制的续接指令）唤醒！"
-          : "👉 续接方法：直接在刚刚的 ChatGPT 网页端输入“继续”发送（或粘贴复制的续接指令），即可自动接力执行！";
-        const textareaStyle = isTurnEnded
-          ? "bg-zinc-100/70 border-zinc-200/80 focus:ring-zinc-400"
-          : "bg-amber-50/70 border-amber-200/80 focus:ring-amber-400";
-
+      if (status.state === "unknown") {
+        currentResumePromptText = buildSessionPrompt(activeSessionId);
         return `
-          <div class="${containerClasses}">
-            <div class="flex items-start justify-between gap-3">
-              <div class="flex items-start gap-3">
-                ${iconContainer}
-                <div>
-                  <div class="text-[14px] font-semibold ${titleColor} flex items-center gap-2">
-                    <span>${escapeHtml(cardTitle)}</span>
-                    <span class="text-[10px] px-1.5 py-0.5 rounded ${tagClasses} font-mono font-bold">${escapeHtml(cardTag)}</span>
-                  </div>
-                  <div class="text-[12.5px] ${detailColor} mt-1 leading-relaxed">
-                    ${escapeHtml(cardDetail)}
-                  </div>
-                </div>
-              </div>
-              <div class="shrink-0 flex items-center gap-2">
-                <button id="btnCopyResumePrompt" onclick="copyCurrentResumePrompt(this)" class="px-3.5 py-1.5 rounded-lg ${btnClasses} text-xs font-semibold shadow-xs flex items-center gap-1.5 transition cursor-pointer">
-                  <span>📋 复制续接指令</span>
-                </button>
-              </div>
+          <div class="mt-8 mb-4 p-4 rounded-xl bg-amber-50/95 border-2 border-amber-300 shadow-sm flex flex-col gap-3 select-none">
+            <div>
+              <div class="text-[14px] font-semibold text-amber-950">${escapeHtml(status.label)}</div>
+              <div class="text-[12.5px] text-amber-800 mt-1 leading-relaxed">${escapeHtml(status.detail)}</div>
             </div>
-
-            <div class="p-3 rounded-lg ${boxBg} text-xs flex flex-col gap-2">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-1.5 font-semibold">
-                  <span>${tipText}</span>
-                </div>
-                <span class="text-[11px] text-zinc-400">点击下方框内可全选复制</span>
-              </div>
-              <textarea readonly id="resumePromptBox" onclick="this.select(); copyCurrentResumePrompt(document.getElementById('btnCopyResumePrompt'))" class="w-full font-mono text-[11.5px] leading-relaxed text-zinc-800 ${textareaStyle} p-2.5 rounded-lg border resize-none focus:outline-none focus:ring-1 select-all cursor-pointer hover:opacity-90 transition" rows="2">${escapeHtml(currentResumePromptText)}</textarea>
+            <div class="flex flex-wrap items-center gap-2">
+              ${status.resettable ? `<button onclick="resetWorker()" class="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-xs font-semibold shadow-xs transition cursor-pointer" title="仅在原 turn 已确认中断时使用">重置执行端（未完成任务退回队首）</button>` : ""}
+              <button id="btnCopyResumePrompt" onclick="copyCurrentResumePrompt(this)" class="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-900 active:scale-95 text-white text-xs font-semibold shadow-xs transition cursor-pointer">📋 复制续接启动词</button>
             </div>
           </div>
         `;
+      }
+      if (["stopping", "offline"].includes(status.state)) {
+        return `<div class="my-4 p-4 rounded-xl border border-zinc-200 bg-zinc-50"><strong>${escapeHtml(status.label)}</strong><p class="text-sm mt-2">${escapeHtml(status.detail)}</p></div>`;
       }
       if (status.state === "waiting") {
         return `
@@ -841,7 +794,7 @@
               <span class="truncate text-[12.5px]">${escapeHtml(sess.name || sess.id)}</span>
             </div>
             <div class="flex items-center gap-1 shrink-0 opacity-40 group-hover:opacity-100 transition">
-              <button class="p-0.5 hover:text-zinc-900 rounded" onclick="event.stopPropagation(); renameSessionPrompt('${escapeHtml(sess.id)}', '${escapeHtml(sess.name || '')}')" title="重命名">✏️</button>
+              <button class="p-0.5 hover:text-zinc-900 rounded" data-name="${escapeHtml(sess.name || '')}" onclick="event.stopPropagation(); renameSessionPrompt('${escapeHtml(sess.id)}', this.dataset.name)" title="重命名">✏️</button>
               ${sess.id !== 'default' ? `<button class="px-1 py-0.5 text-xs text-zinc-400 hover:text-rose-600 rounded transition" onclick="event.stopPropagation(); triggerDeleteSession('${escapeHtml(sess.id)}', this)" title="从列表移除并请求停止；当前命令不保证立即结束">🗑️</button>` : ''}
             </div>
             ${sess.taskCount > 0 ? `<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-zinc-200/70 text-zinc-600 font-mono ml-1 shrink-0">${sess.taskCount}</span>` : ''}
@@ -940,7 +893,8 @@
     window.editTaskPrompt = async function(taskId, idx) {
       if (!currentTasksCache || idx < 0 || idx >= currentTasksCache.length) return;
       const currentTask = currentTasksCache[idx];
-      const newTask = window.prompt(`修改待办任务 #${idx + 1}：`, currentTask);
+      const multiline = currentTask.includes("\n");
+      const newTask = window.prompt(`修改待办任务 #${idx + 1}：${multiline ? "\n（多行任务在此编辑会合并为一行；如需保留换行，请删除后重新发送）" : ""}`, currentTask);
       if (newTask !== null && newTask.trim() && newTask.trim() !== currentTask) {
         try {
           await apiFetch("/api/update-task", {
@@ -1050,17 +1004,21 @@
       // Update Agent Status Badge
       updateAgentStatusBadge(data.agentStatus);
 
-      // Render response
+      // Render response (SSE omits it when unchanged; keep the last copy)
+      if (Object.prototype.hasOwnProperty.call(data, "response")) currentResponseText = data.response || "";
+      const cardHtml = renderStatusCard(data.agentStatus);
+      const responseRenderKey = `${activeSessionId}\u0000${currentResponseText}\u0000${cardHtml}`;
+      if (responseRenderKey === lastResponseRenderKey) return;
+      lastResponseRenderKey = responseRenderKey;
       const wasAtBottom = elResponseScrollArea.scrollHeight - elResponseScrollArea.scrollTop <= elResponseScrollArea.clientHeight + 100;
       let contentHtml = "";
-      if (data.response && data.response.trim()) {
-        contentHtml = renderCodexContent(data.response);
+      if (currentResponseText.trim()) {
+        contentHtml = renderCodexContent(currentResponseText);
       } else {
         contentHtml = '<div class="text-zinc-400 italic text-center py-20 text-sm">等待 6pro 产生第一阶段汇报...</div>';
       }
 
       // Append real-time status card at bottom of conversation
-      const cardHtml = renderStatusCard(data.agentStatus);
       elResponse.innerHTML = contentHtml + cardHtml;
 
       elResponse.querySelectorAll('pre code').forEach((block) => {
@@ -1169,7 +1127,11 @@
 
     window.cleanEmptySessions = async function() {
       try {
-        const res = await apiFetch("/api/sessions/clean-empty", { method: "POST" });
+        const res = await apiFetch("/api/sessions/clean-empty", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
         const data = await res.json();
         if (data && data.sessions) {
           renderSessions(data.sessions);
@@ -1254,14 +1216,31 @@
     }
 
     btnFinishTurn.addEventListener("click", async () => {
-      if (confirm(`请求停止会话 [${activeSessionId}]？执行端将在下次领取任务时确认，当前命令可能继续执行，待办任务会保留。`)) {
-        await apiFetch("/api/add-task", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ task: "/exit", session_id: activeSessionId }),
-        });
+      if (confirm(`请求停止会话 [${activeSessionId}]？执行端将在下次领取任务时确认，当前命令可能继续执行，待办任务会保留。没有在线执行端时会立即停止。`)) {
+        try {
+          const res = await apiFetch("/api/add-task", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ task: "/exit", session_id: activeSessionId }),
+          });
+          const data = await res.json();
+          showCopyToast(data.stopped ? "当前没有在线执行端，已直接停止" : "已请求停止，等待执行端确认");
+        } catch {}
       }
     });
+
+    window.resetWorker = async function() {
+      if (!confirm(`重置会话 [${activeSessionId}] 的执行端？\n仅在原 turn 已确认中断时使用：未完成任务会退回队首，由下一个 turn 重新执行。`)) return;
+      try {
+        const res = await apiFetch("/api/sessions/reset-worker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: activeSessionId }),
+        });
+        const data = await res.json();
+        showCopyToast(data.requeuedTaskId ? "已重置，未完成任务已退回队首" : "已重置执行端");
+      } catch {}
+    };
 
     btnClearResponse.addEventListener("click", async () => {
       if (confirm(`确认清空会话 [${activeSessionId}] 的历史展示？已保存的任务结果仍保留。`)) {
@@ -1374,11 +1353,11 @@
     btnChangeWs.addEventListener("click", changeWorkspacePrompt);
     workspaceBtn.addEventListener("click", changeWorkspacePrompt);
 
-    // Copy Prompt (Session tailored)
-    btnCopyPrompt.addEventListener("click", () => {
-      const currentMeta = (currentSessionsCache || []).find(s => s.id === activeSessionId);
-      const sessionName = currentMeta ? currentMeta.name : (activeSessionId === "default" ? "默认会话" : activeSessionId);
-      const promptText = `你当前已绑定本地会话【${sessionName}】（Session ID: ${activeSessionId}）。\n` +
+    function buildSessionPrompt(sessionId) {
+      const activeSessionId = sessionId;
+      const currentMeta = (currentSessionsCache || []).find(s => s.id === sessionId);
+      const sessionName = currentMeta ? currentMeta.name : (sessionId === "default" ? "默认会话" : sessionId);
+      return `你当前已绑定本地会话【${sessionName}】（Session ID: ${activeSessionId}）。\n` +
         `请从当前工作区根目录或 sessions/${activeSessionId}/ 目录启动 CLI。目标会话：${activeSessionId}\n\n` +
         `【任务执行与协同规范】\n` +
         `1. 任务流转与状态同步：通过 MCP 工具 codex_fetch_next_task 与本地工作区保持同步。\n` +
@@ -1388,6 +1367,13 @@
         `4. 持续协同监听：只要 has_next 为 true，在完成当前阶段任务并落盘后，请继续调用 codex_fetch_next_task 接收下一条指令。\n` +
         `5. 退出通道：当 codex_fetch_next_task 返回 has_next=false（用户输入 /exit）时，输出最终总结并结束本轮。\n` +
         `现在请调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="Idle") 获取首个任务或进入待命状态。`;
+    }
+
+    // Copy Prompt (Session tailored)
+    btnCopyPrompt.addEventListener("click", () => {
+      const currentMeta = (currentSessionsCache || []).find(s => s.id === activeSessionId);
+      const sessionName = currentMeta ? currentMeta.name : (activeSessionId === "default" ? "默认会话" : activeSessionId);
+      const promptText = buildSessionPrompt(activeSessionId);
       copyToClipboard(promptText).then(() => {
         showCopyToast(`已复制【${sessionName.slice(0, 10)}】启动词`);
         const orig = btnCopyPrompt.innerHTML;

@@ -1,6 +1,6 @@
 # Session-bound launches
 
-Task protocol 2 supersedes the report/validation details below. See `TASK_PROTOCOL.md`
+Task protocol 3 supersedes the report/validation details below. See `TASK_PROTOCOL.md`
 for exact task IDs, stop acknowledgement, current offline validation and activation.
 
 `/api/sessions/create` returns `sessionDir`, the absolute directory created by that

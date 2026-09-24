@@ -93,6 +93,10 @@ test("HTTP deletion retargets two subscribers and remains deleted after restart"
     assert.equal((await request("/api/sessions")).data.sessions.some(s => s.id === "sess_a"), false);
     // Exercise the sibling bulk-deletion path with the same live subscriptions.
     await request("/api/sessions/clean-empty", {});
+    assert.equal((await request("/api/sessions")).data.sessions.some(s => s.id === "sess_b"), true, "a running session is not empty");
+    fs.writeFileSync(path.join(workspace, "sessions", "sess_b", ".active_task"), "");
+    fs.writeFileSync(path.join(workspace, "sessions", "sess_b", ".heartbeat"), "0");
+    await request("/api/sessions/clean-empty", {});
     assert.equal((await request("/api/sessions")).data.sessions.some(s => s.id === "sess_b"), false);
     controllers.forEach(controller => controller.abort());
     await stop();
