@@ -58,7 +58,7 @@ manifest and exits at startup on a mismatch, so never copy single files into tho
 launcher waits for the app to pass that check. The page shows the loaded server revision/start
 time, build freshness estimate, and observed worker protocol.
 
-The local installed ask-6pro script is synchronized with the repository CLI. Tests
+The installed ask-6pro skill forwards to this repository's `ask-6pro.mjs`, so it cannot drift. Tests
 cover the local protocol; a real ChatGPT/browser/model end-to-end run remains deferred.
 
 ## HTTP access

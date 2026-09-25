@@ -10,6 +10,8 @@ import { isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 
 const BASE_URL = process.env.SIXPRO_SERVER_URL || "http://127.0.0.1:17888";
+// Each spawn/resume starts one ChatGPT turn; Pro quota is scarce, so it is never the default.
+const DEFAULT_MODEL = "chatgpt-web/high";
 
 function request(method, path, body = null) {
   return new Promise((resolve, reject) => {
@@ -97,18 +99,26 @@ async function cmdSend(taskText, sessionId = "") {
     console.error("错误: 请提供任务内容。例如: ask-6pro send \"帮我分析一下架构\"");
     process.exit(1);
   }
-  const res = await sendTask(taskText.trim(), sessionId);
+  const info = await getInfo(sessionId);
+  const sId = sessionId || info.activeSessionId || "default";
+  const res = await sendTask(taskText.trim(), sId, join(info.workspace, "sessions", sId));
   if (res.stopRequested) {
     console.log(res.stopped ? "✅ 当前没有在线执行端，会话已直接停止。" : "✅ 已请求停止，执行端将在下次领取任务时确认。");
     return;
   }
-  console.log(`✅ 任务已成功加入待办队列！`);
-  console.log(`当前队列剩余任务数: ${res.tasks.length}`);
+  console.log(`✅ 任务已加入会话 ${sId} 的待办队列（队列中 ${res.tasks.length} 个）。`);
+  console.log(`任务 ID: ${res.taskId}`);
+  console.log(`查看结果: wait --session ${sId} --task ${res.taskId}`);
+  if (["offline", "unknown"].includes(info.agentStatus?.state)) {
+    console.log(`⚠️ 会话当前没有在线执行端（${info.agentStatus.label}）；可用 resume --session ${sId} 拉起新的执行 turn。`);
+  }
 }
 
 async function waitForAnswer(sId, taskId, timeoutSec = 300, sessionDir = "") {
   if (!taskId) throw new Error("服务端未返回 taskId，请更新任务服务后重试");
   const startedAt = Date.now();
+  let lastState = "";
+  let warnedIdle = false;
   while (Date.now() - startedAt < timeoutSec * 1000) {
     try {
       const info = await getInfo(sId, sessionDir, taskId);
@@ -118,13 +128,22 @@ async function waitForAnswer(sId, taskId, timeoutSec = 300, sessionDir = "") {
         return task.response;
       }
       if (task?.state === "cancelled") throw Object.assign(new Error(task.reason || "任务已取消"), { terminal: true });
-      if (!task || task.state === "unknown") throw Object.assign(new Error("任务记录不可用；请检查网关是否已更新到任务协议 2"), { terminal: true });
+      if (!task || task.state === "unknown") throw Object.assign(new Error("任务记录不可用；请检查网关是否已更新到任务协议 3"), { terminal: true });
+      if (task.state !== lastState) {
+        lastState = task.state;
+        console.log(`[${new Date().toLocaleTimeString("zh-CN", { hour12: false })}] 任务状态: ${task.state === "running" ? "模型已领取，正在处理" : "排队中"}`);
+      }
+      // A queued task on a session without a live worker waits forever; say so once.
+      if (!warnedIdle && task.state === "queued" && ["offline", "unknown"].includes(info.agentStatus?.state)) {
+        warnedIdle = true;
+        console.log(`⚠️ 会话 ${sId} 当前没有在线执行端（${info.agentStatus.label}），任务会一直排队；可用 resume --session ${sId} 拉起新的执行 turn。`);
+      }
     } catch (error) {
       if (error.terminal || (error.status >= 400 && error.status < 500)) throw error;
     }
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  throw new Error(`等待任务 ${taskId} 超时 (${timeoutSec}秒)；这不会取消任务。请使用 history --session ${sId} 查看结果。`);
+  throw new Error(`等待任务 ${taskId} 超时 (${timeoutSec}秒)；这不会取消任务。稍后可用 wait --session ${sId} --task ${taskId} 继续等待结果。`);
 }
 
 async function cmdAsk(question, timeoutSec = 300, sessionId = "") {
@@ -151,7 +170,7 @@ async function cmdAsk(question, timeoutSec = 300, sessionId = "") {
     console.log(submitted.stopped ? "✅ 当前没有在线执行端，会话已直接停止。" : "✅ 已请求停止，执行端将在下次领取任务时确认。");
     return "";
   }
-  console.log(`⏳ 任务已入队，等待 6Pro 领取并开始推理...\n`);
+  console.log(`⏳ 任务已入队（任务 ID: ${submitted.taskId}），等待 6Pro 领取并开始推理...\n`);
 
   return await waitForAnswer(sId, submitted.taskId, timeoutSec, sessionDir);
 }
@@ -170,41 +189,17 @@ function buildLaunchPrompt(sessionName, sessionId) {
 现在请调用 codex_fetch_next_task(session_id="${sessionId}", step_summary="Idle") 获取首个任务或进入待命状态。`;
 }
 
-async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300) {
-  const finalName = (sessionName && sessionName.trim()) ? sessionName.trim() : `新会话_${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
-
-  // 1. 创建新会话
-  const createRes = await request("POST", "/api/sessions/create", { name: finalName });
-  if (createRes.status !== 200 || !createRes.data.success) {
-    throw new Error(`创建新会话失败: ${JSON.stringify(createRes.data)}`);
-  }
-  const session = createRes.data.session;
-  const sessionId = session.id;
-  const sessionDir = createRes.data.sessionDir;
-  if (typeof sessionDir !== "string" || !isAbsolute(sessionDir)) {
-    throw new Error("服务端没有返回绝对会话目录；请更新并重启 6pro-agent 服务后重试，不能使用当前界面会话兜底。");
-  }
-  console.log(`\n✨ 已创建全新会话: 【${session.name}】(${sessionId})`);
-
-  let taskId;
-  // 2. 如果提供了初始任务，先将其推入队列
-  if (initialTask && initialTask.trim()) {
-    taskId = (await sendTask(initialTask.trim(), sessionId, sessionDir)).taskId;
-    console.log(`📋 初始任务已加入待办队列: "${initialTask.trim()}"`);
-  }
-
-  // 3. 构建专属启动词
-  const launchPrompt = buildLaunchPrompt(session.name, sessionId);
-
-  // 4. 后台无头拉起 Codex CLI，向网关发起握手
-  console.log(`🚀 正在通过无头模式拉起 Codex CLI (chatgpt-web/high)...`);
+// Start one Codex turn bound to the session directory and wait for its first heartbeat there.
+async function launchWorker({ sessionId, sessionName, sessionDir, timeoutSec, model }) {
+  const launchPrompt = buildLaunchPrompt(sessionName, sessionId);
+  console.log(`🚀 正在通过无头模式拉起 Codex CLI (${model})...`);
   const codexBin = process.env.CODEX_BIN || "D:\\tools\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js";
   const logPath = join(sessionDir, "codex-cli.log");
   const logFd = openSync(logPath, "a");
   const startedAt = Date.now();
   let cp;
   try {
-    cp = spawn(process.execPath, [codexBin, "exec", "--cd", sessionDir, "--model", "chatgpt-web/high", "--skip-git-repo-check", "-"], {
+    cp = spawn(process.execPath, [codexBin, "exec", "--cd", sessionDir, "--model", model, "--skip-git-repo-check", "-"], {
       cwd: sessionDir,
       stdio: ["pipe", logFd, logFd],
       windowsHide: true,
@@ -219,21 +214,61 @@ async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300) {
   cp.stdin.end(launchPrompt);
   cp.unref();
 
-  // Only a heartbeat in this exact new session confirms the MCP binding.
-  while (Date.now() - startedAt < timeoutSec * 1000) {
+  // Only a heartbeat in this exact session confirms the MCP binding.
+  const heartbeat = () => { try { return Number(readFileSync(join(sessionDir, ".heartbeat"), "utf8")); } catch { return 0; } };
+  while (!(heartbeat() >= startedAt) && Date.now() - startedAt < timeoutSec * 1000) {
     if (launchError) throw launchError;
     if (cp.exitCode !== null || cp.signalCode !== null) throw new Error(`Codex CLI 已退出 (${cp.exitCode ?? cp.signalCode})，参见 ${logPath}`);
-    let heartbeat = 0;
-    try { heartbeat = Number(readFileSync(join(sessionDir, ".heartbeat"), "utf8")); } catch {}
-    if (Number.isFinite(heartbeat) && heartbeat >= startedAt) break;
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  let heartbeat = 0;
-  try { heartbeat = Number(readFileSync(join(sessionDir, ".heartbeat"), "utf8")); } catch {}
-  if (!Number.isFinite(heartbeat) || heartbeat < startedAt) throw new Error(`目标会话 ${sessionId} 建联超时；后台进程可能仍在运行，参见 ${logPath}`);
+  if (!(heartbeat() >= startedAt)) throw new Error(`目标会话 ${sessionId} 建联超时；后台进程可能仍在运行，参见 ${logPath}`);
   console.log(`✅ 已确认目标会话 ${sessionId} 的 MCP 心跳。日志：${logPath}`);
+}
 
-  // 5. 持续监控与结果提取
+async function cmdResume(sessionId, timeoutSec, model) {
+  if (!sessionId) throw new Error("resume 需要 --session <sessionId>");
+  const info = await getInfo(sessionId);
+  const status = info.agentStatus || {};
+  if (["running", "waiting"].includes(status.state)) {
+    console.log(`会话 ${sessionId} 已有在线执行端（${status.label}），不需要再拉起；直接用 send/ask 发送消息。`);
+    return;
+  }
+  if (["unknown", "stopping"].includes(status.state)) {
+    // A new turn would only wait for the old one here; that cannot be confirmed by a heartbeat.
+    throw new Error(`会话 ${sessionId} 状态为「${status.label}」：旧 turn 仍持有任务或尚未确认停止。确认旧 turn 已中断后，先在控制台重置执行端，或用 stop 停止后再 resume。`);
+  }
+  const session = (info.sessions || []).find(s => s.id === sessionId);
+  await launchWorker({ sessionId, sessionName: session?.name || sessionId, sessionDir: join(info.workspace, "sessions", sessionId), timeoutSec, model });
+}
+
+async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300, model = DEFAULT_MODEL) {
+  const finalName = (sessionName && sessionName.trim()) ? sessionName.trim() : `新会话_${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+
+  // 1. 创建新会话
+  const createRes = await request("POST", "/api/sessions/create", { name: finalName });
+  if (createRes.status !== 200 || !createRes.data.success) {
+    throw new Error(`创建新会话失败: ${JSON.stringify(createRes.data)}`);
+  }
+  const session = createRes.data.session;
+  const sessionId = session.id;
+  const sessionDir = createRes.data.sessionDir;
+  if (typeof sessionDir !== "string" || !isAbsolute(sessionDir)) {
+    throw new Error("服务端没有返回绝对会话目录；请更新并重启 6pro-agent 服务后重试，不能使用当前界面会话兜底。");
+  }
+  console.log(`\n✨ 已创建全新会话: 【${session.name}】(${sessionId})`);
+  console.log(`会话 ID: ${sessionId}`);
+
+  let taskId;
+  // 2. 如果提供了初始任务，先将其推入队列
+  if (initialTask && initialTask.trim()) {
+    taskId = (await sendTask(initialTask.trim(), sessionId, sessionDir)).taskId;
+    console.log(`📋 初始任务已加入待办队列（任务 ID: ${taskId}）: "${initialTask.trim()}"`);
+  }
+
+  // 3. 后台无头拉起 Codex CLI，向网关发起握手
+  await launchWorker({ sessionId, sessionName: session.name, sessionDir, timeoutSec, model });
+
+  // 4. 持续监控与结果提取
   if (initialTask && initialTask.trim()) {
     console.log(`⏳ 正在等待 6Pro 自动建联并完成初始任务 (超时限制: ${timeoutSec}s)...`);
     return await waitForAnswer(sessionId, taskId, timeoutSec, sessionDir);
@@ -249,59 +284,131 @@ async function cmdHistory(sessionId = "") {
   console.log(`\n=========================================\n`);
 }
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const clock = () => new Date().toLocaleTimeString("zh-CN", { hour12: false });
+
+async function cmdWait(sessionId, taskId, timeoutSec) {
+  if (!taskId) throw new Error("wait 需要 --task <taskId>");
+  const info = await getInfo(sessionId);
+  const sId = sessionId || info.activeSessionId || "default";
+  return await waitForAnswer(sId, taskId, timeoutSec, join(info.workspace, "sessions", sId));
+}
+
+// Streams status changes and whatever the service appends to RESPONSE.md (task and report records).
+async function cmdWatch(sessionId, timeoutSec) {
+  const first = await getInfo(sessionId);
+  const sId = sessionId || first.activeSessionId || "default";
+  let seen = (first.response || "").length;
+  let lastStatus = "";
+  console.log(`👀 正在监控会话 ${sId} 的新回复（最长 ${timeoutSec} 秒）...`);
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    let info;
+    try { info = await getInfo(sId); }
+    catch (error) {
+      if (error.status >= 400 && error.status < 500) throw error;
+      await sleep(2000);
+      continue;
+    }
+    const status = `${info.agentStatus?.label || info.agentStatus?.state || "未知"}，待办 ${(info.tasks || []).length}`;
+    if (status !== lastStatus) {
+      console.log(`[${clock()}] 状态: ${status}`);
+      lastStatus = status;
+    }
+    const response = info.response || "";
+    if (response.length < seen) seen = 0; // The history display was cleared.
+    if (response.length > seen) {
+      console.log(response.slice(seen).trim());
+      seen = response.length;
+    }
+    await sleep(2000);
+  }
+  console.log(`[${clock()}] 监控结束（${timeoutSec} 秒）。`);
+}
+
+async function cmdStop(sessionId) {
+  if (!sessionId) throw new Error("stop 需要 --session <sessionId>");
+  const res = await sendTask("/exit", sessionId);
+  console.log(res.stopped ? `✅ 会话 ${sessionId} 当前没有在线执行端，已直接停止。` : `✅ 已请求停止会话 ${sessionId}，执行端将在下次领取任务时确认。`);
+}
+
+async function cmdSessions() {
+  const res = await request("GET", "/api/sessions");
+  if (res.status !== 200) throw new Error(`获取会话列表失败 (HTTP ${res.status})`);
+  const labels = { running: "执行中", waiting: "在线待命", stopping: "停止中", unknown: "状态待确认", offline: "离线" };
+  for (const s of res.data.sessions) console.log(`${s.id}\t${labels[s.activity] || s.activity}\t待办 ${s.taskCount}\t${s.name}`);
+}
+
+function parseArgs(argv) {
+  const options = {};
+  const positional = [];
+  for (let i = 0; i < argv.length; i++) {
+    const option = /^--(session|timeout|task|model)$/.exec(argv[i]);
+    if (option && i + 1 < argv.length) options[option[1]] = argv[++i];
+    else positional.push(argv[i]);
+  }
+  return { options, positional };
+}
+
 async function main() {
-  const args = process.argv.slice(2);
-  const cmd = args[0] || "status";
-
-  let sessionArg = "";
-  const sessIdx = args.indexOf("--session");
-  if (sessIdx !== -1 && args[sessIdx + 1]) {
-    sessionArg = args[sessIdx + 1];
-  }
-
-  let timeoutArg = 300;
-  const timeoutIdx = args.indexOf("--timeout");
-  if (timeoutIdx !== -1 && args[timeoutIdx + 1]) {
-    timeoutArg = parseInt(args[timeoutIdx + 1], 10) || 300;
-  }
+  const { options, positional } = parseArgs(process.argv.slice(2));
+  const cmd = positional[0] || "status";
+  const rest = positional.slice(1);
+  const sessionArg = options.session || "";
+  const timeoutArg = parseInt(options.timeout, 10) || 300;
+  const modelArg = options.model || DEFAULT_MODEL;
 
   try {
     switch (cmd) {
       case "status":
         await cmdStatus(sessionArg);
         break;
-      case "send": {
-        const text = args.filter((a, i) => i > 0 && a !== "--session" && args[i - 1] !== "--session" && a !== "--timeout" && args[i - 1] !== "--timeout").join(" ");
-        await cmdSend(text, sessionArg);
+      case "sessions":
+        await cmdSessions();
         break;
-      }
-      case "ask": {
-        const text = args.filter((a, i) => i > 0 && a !== "--session" && args[i - 1] !== "--session" && a !== "--timeout" && args[i - 1] !== "--timeout").join(" ");
-        await cmdAsk(text, timeoutArg, sessionArg);
+      case "send":
+        await cmdSend(rest.join(" "), sessionArg);
         break;
-      }
-      case "spawn": {
+      case "ask":
+        await cmdAsk(rest.join(" "), timeoutArg, sessionArg);
+        break;
+      case "wait":
+        await cmdWait(sessionArg, options.task, timeoutArg);
+        break;
+      case "watch":
+        await cmdWatch(sessionArg, timeoutArg);
+        break;
+      case "spawn":
         // ask-6pro spawn [sessionName] [initialTask]
-        const nonOptions = args.slice(1).filter((a, i, arr) => a !== "--session" && arr[i - 1] !== "--session" && a !== "--timeout" && arr[i - 1] !== "--timeout");
-        const name = nonOptions[0] || "";
-        const task = nonOptions.slice(1).join(" ") || "";
-        await cmdSpawn(name, task, timeoutArg);
+        await cmdSpawn(rest[0] || "", rest.slice(1).join(" "), timeoutArg, modelArg);
         break;
-      }
+      case "resume":
+        await cmdResume(sessionArg, timeoutArg, modelArg);
+        break;
+      case "stop":
+        await cmdStop(sessionArg);
+        break;
       case "history":
         await cmdHistory(sessionArg);
         break;
       default:
         console.log(`用法:
-  ask-6pro status                     # 查看 6pro 在线保活状态与队列
-  ask-6pro spawn "<会话名称>" ["<任务>"] # 一键新建会话、新开网页对话、拉起终端并监控
-  ask-6pro send "<任务内容>"           # 异步下发任务到待办队列
-  ask-6pro ask "<问题内容>"            # 一键提问当前会话，阻塞等待并提取回复
-  ask-6pro history                    # 查看会话完整历史回复
+  ask-6pro sessions                          # 列出所有会话及在线状态
+  ask-6pro status [--session <id>]           # 查看会话在线状态与待办队列
+  ask-6pro spawn "<会话名称>" ["<初始任务>"]   # 新建会话并拉起一个执行 turn；有初始任务时等待其回复
+  ask-6pro resume --session <id>             # 为已有但离线的会话拉起新的执行 turn
+  ask-6pro send "<消息>" --session <id>       # 向会话发送消息（不等待），输出任务 ID
+  ask-6pro ask "<问题>" --session <id>        # 发送并等待这条消息的回复
+  ask-6pro wait --task <taskId> --session <id> # 等待某个任务的回复
+  ask-6pro watch --session <id>              # 持续监控会话的新回复与状态变化
+  ask-6pro stop --session <id>               # 请求结束会话当前的执行 turn
+  ask-6pro history [--session <id>]          # 查看会话完整历史回复
 
 选项:
-  --session <sessionId>               # 指定操作的会话 ID
-  --timeout <seconds>                 # 设置等待超时时间 (默认 300 秒)
+  --session <sessionId>   指定会话；不指定时使用控制台当前选中的会话
+  --timeout <seconds>     等待/监控/建联超时 (默认 300 秒)；超时不会取消任务
+  --task <taskId>         wait 使用的任务 ID
+  --model <model>         spawn/resume 使用的模型 (默认 ${DEFAULT_MODEL})
 `);
     }
   } catch (err) {
