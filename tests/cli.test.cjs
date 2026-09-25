@@ -29,19 +29,26 @@ test('CLI sends to an explicit session, waits for that task, watches new replies
     await create('cli_a');
     await create('cli_b'); // The console now selects cli_b; --session must still address cli_a.
     const dir = path.join(root, 'sessions', 'cli_a');
+    const otherDir = path.join(root, 'sessions', 'cli_b');
     store.poll(dir, 'worker');
+    store.poll(otherDir, 'other-worker');
 
     const sent = await cli('send', '第一行\n\n第二段', '--session', 'cli_a');
     const taskId = /任务 ID: (\S+)/.exec(sent.stdout)[1];
-    const watching = cli('watch', '--session', 'cli_a', '--timeout', '6');
+    const otherTaskId = /任务 ID: (\S+)/.exec((await cli('send', 'B 的问题', '--session', 'cli_b')).stdout)[1];
+    const watching = cli('watch', '--session', 'cli_a,cli_b', '--timeout', '6');
     const waiting = cli('wait', '--session', 'cli_a', '--task', taskId, '--timeout', '10');
     await new Promise(resolve => setTimeout(resolve, 1500));
     assert.equal(store.poll(dir, 'worker').task_id, taskId);
     store.poll(dir, 'worker', { task_id: taskId, response_text: '收到' });
+    assert.equal(store.poll(otherDir, 'other-worker').task_id, otherTaskId);
+    store.poll(otherDir, 'other-worker', { task_id: otherTaskId, response_text: 'B 的回复' });
     assert.match((await waiting).stdout, /收到/);
     const watched = (await watching).stdout;
-    assert.match(watched, /第二段/);
-    assert.match(watched, /收到/);
+    assert.match(watched, /\[cli_a\] 第二段/);
+    assert.match(watched, /\[cli_a\] 收到/);
+    assert.match(watched, /\[cli_b\] B 的回复/);
+    assert.doesNotMatch(watched, /\[cli_a\] B 的回复/);
 
     assert.match((await cli('stop', '--session', 'cli_a')).stdout, /已请求停止会话 cli_a/);
     assert.equal(store.poll(dir, 'worker').has_next, false);

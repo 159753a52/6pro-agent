@@ -294,32 +294,34 @@ async function cmdWait(sessionId, taskId, timeoutSec) {
   return await waitForAnswer(sId, taskId, timeoutSec, join(info.workspace, "sessions", sId));
 }
 
-// Streams status changes and whatever the service appends to RESPONSE.md (task and report records).
-async function cmdWatch(sessionId, timeoutSec) {
-  const first = await getInfo(sessionId);
-  const sId = sessionId || first.activeSessionId || "default";
-  let seen = (first.response || "").length;
-  let lastStatus = "";
-  console.log(`👀 正在监控会话 ${sId} 的新回复（最长 ${timeoutSec} 秒）...`);
+// Streams status changes and whatever the service appends to RESPONSE.md (task and report records)
+// for one or more sessions (--session a,b); with several sessions every line is tagged with its ID.
+async function cmdWatch(sessionArg, timeoutSec) {
+  const ids = sessionArg ? sessionArg.split(",").map(id => id.trim()).filter(Boolean) : [(await getInfo()).activeSessionId || "default"];
+  const tag = id => ids.length > 1 ? `[${id}] ` : "";
+  const watched = new Map();
+  for (const id of ids) watched.set(id, { seen: ((await getInfo(id)).response || "").length, status: "" });
+  console.log(`👀 正在监控会话 ${ids.join(", ")} 的新回复（最长 ${timeoutSec} 秒）...`);
   const deadline = Date.now() + timeoutSec * 1000;
   while (Date.now() < deadline) {
-    let info;
-    try { info = await getInfo(sId); }
-    catch (error) {
-      if (error.status >= 400 && error.status < 500) throw error;
-      await sleep(2000);
-      continue;
-    }
-    const status = `${info.agentStatus?.label || info.agentStatus?.state || "未知"}，待办 ${(info.tasks || []).length}`;
-    if (status !== lastStatus) {
-      console.log(`[${clock()}] 状态: ${status}`);
-      lastStatus = status;
-    }
-    const response = info.response || "";
-    if (response.length < seen) seen = 0; // The history display was cleared.
-    if (response.length > seen) {
-      console.log(response.slice(seen).trim());
-      seen = response.length;
+    for (const [id, state] of watched) {
+      let info;
+      try { info = await getInfo(id); }
+      catch (error) {
+        if (error.status >= 400 && error.status < 500) throw error;
+        continue;
+      }
+      const status = `${info.agentStatus?.label || info.agentStatus?.state || "未知"}，待办 ${(info.tasks || []).length}`;
+      if (status !== state.status) {
+        console.log(`[${clock()}] ${tag(id)}状态: ${status}`);
+        state.status = status;
+      }
+      const response = info.response || "";
+      if (response.length < state.seen) state.seen = 0; // The history display was cleared.
+      if (response.length > state.seen) {
+        console.log(response.slice(state.seen).trim().split("\n").map(line => tag(id) + line).join("\n"));
+        state.seen = response.length;
+      }
     }
     await sleep(2000);
   }
@@ -400,7 +402,7 @@ async function main() {
   ask-6pro send "<消息>" --session <id>       # 向会话发送消息（不等待），输出任务 ID
   ask-6pro ask "<问题>" --session <id>        # 发送并等待这条消息的回复
   ask-6pro wait --task <taskId> --session <id> # 等待某个任务的回复
-  ask-6pro watch --session <id>              # 持续监控会话的新回复与状态变化
+  ask-6pro watch --session <id>[,<id>...]    # 持续监控一个或多个会话的新回复与状态变化
   ask-6pro stop --session <id>               # 请求结束会话当前的执行 turn
   ask-6pro history [--session <id>]          # 查看会话完整历史回复
 
