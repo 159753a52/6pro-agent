@@ -49,12 +49,14 @@ queue producers/consumers and UI function execution. They do not call a model.
 Gateway checks: `bun test tests/task-session.test.ts tests/task-queue-mcp.test.ts`
 and `bun x --no-install tsc --noEmit`. MCP is tested through a local stdio client and broker.
 
-Update both services together. Build the gateway, update the runtime used by its MCP
-profile as well as the HTTP gateway, then restart only when interruption is acceptable.
-No deployed runtime was rebuilt or restarted for this change. The desktop launcher
-refuses stale source/build timestamps before stopping services. The page shows the
-loaded server revision/start time, build freshness estimate, and observed worker
-protocol. A build timestamp is not proof that the running MCP profile uses that build.
+Update both services together, and restart only when interruption is acceptable. The desktop
+launcher (`scripts/start-all.ps1`) does this: it refuses differing `task-store.cjs` copies, rebuilds
+a stale gateway into `dist/runtime-next` while the old services keep running, then stops them and
+mirrors the whole bundle into `dist/runtime`, the Codex Web GPT app (`resources/runtime`) and the
+MCP runtime under `~/.codex-chatgpt-web/versions`. The app checks every file against the bundle
+manifest and exits at startup on a mismatch, so never copy single files into those runtimes; the
+launcher waits for the app to pass that check. The page shows the loaded server revision/start
+time, build freshness estimate, and observed worker protocol.
 
 The local installed ask-6pro script is synchronized with the repository CLI. Tests
 cover the local protocol; a real ChatGPT/browser/model end-to-end run remains deferred.
