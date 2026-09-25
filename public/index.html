@@ -501,8 +501,8 @@
       const sections = rawMarkdown.split(/(?=^###\s*(?:用户任务|阶段汇报))/m);
       const htmlParts = [];
 
-      for (const sec of sections) {
-        const trimmed = sec.trim();
+      for (let index = 0; index < sections.length; index++) {
+        const trimmed = sections[index].trim();
         if (!trimmed) continue;
 
         const match = trimmed.match(/^###\s*(用户任务|阶段汇报)\s*\[?([0-9:]*)\]?/);
@@ -514,14 +514,17 @@
           if (type === "用户任务") {
             let userPromptText = body;
             let accidentalModelReply = "";
+            // The task service writes `<!-- task:ID -->`, the exact task text and a separate 阶段汇报
+            // section, so a recorded task keeps its blank lines and is never split below.
+            const recordedTask = index > 0 && /<!-- task:[a-zA-Z0-9_-]+ -->\s*$/.test(sections[index - 1]);
 
             // Compatibility check: Detect if model output was appended into the user task section without a divider
             // Case 1: Model echoed "用户任务：..." in its own response
-            const matchModelEcho = body.match(/^(.*?)(?:\r?\n){2,}(用户任务\s*[：:][\s\S]*)$/);
+            const matchModelEcho = !recordedTask && body.match(/^(.*?)(?:\r?\n){2,}(用户任务\s*[：:][\s\S]*)$/);
             if (matchModelEcho) {
               userPromptText = matchModelEcho[1].trim();
               accidentalModelReply = matchModelEcho[2].trim();
-            } else {
+            } else if (!recordedTask) {
               // Case 2: Historical data where user prompt is short and followed by model response paragraphs
               const splitParts = body.split(/(?:\r?\n){2,}/);
               if (splitParts.length >= 2 && splitParts[0].length < 200 && splitParts.slice(1).join("\n\n").length > splitParts[0].length) {

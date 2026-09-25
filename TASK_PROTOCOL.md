@@ -18,9 +18,10 @@ Windows file-sharing retries. A live lock owner is never evicted because it is s
   not append duplicate reports. Completion receipts repair interrupted display writes.
 - `.stop_requested`: a request, not confirmation, recording the owner of the turn it targets.
   That worker sets `.stopped` when it acknowledges at its next poll. If no live worker and no
-  claimed task exist, the service settles the stop immediately. If a different (newer) turn
-  polls first, it acknowledges the stop on the old turn's behalf, cancels the old claim and
-  keeps serving instead of exiting. An already running shell command is not forcibly killed.
+  claimed task exist, the service settles the stop immediately. A different (newer) turn that
+  polls while the old worker is still live waits (`__POLL__`) for it to acknowledge. Once the old
+  worker's heartbeat has expired, the newer turn acknowledges the stop on its behalf, cancels the
+  old claim and keeps serving instead of exiting. An already running shell command is not forcibly killed.
   Queued work survives stop, and new tasks may be queued while a stop is pending.
 - A newer turn that finds a silent turn's unfinished claim waits (`__POLL__`) without touching
   it. `POST /api/sessions/reset-worker` (refused while the worker heartbeat is live) returns the

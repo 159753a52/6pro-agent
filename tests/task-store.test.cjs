@@ -136,3 +136,14 @@ test('multi-line tasks keep their formatting and legacy queue lines migrate with
   assert.equal(claimed.next_task, 'legacy raw');
   assert.equal(claimed.task_id, tasks[0].id);
 }));
+test('a new turn waits while the stopped turn is still live, then takes over after it acknowledges', () => fixture(dir => {
+  store.enqueue(dir, 'running', 'a');
+  store.enqueue(dir, 'next', 'b');
+  assert.equal(store.poll(dir, 'old').task_id, 'a');
+  store.enqueue(dir, '/exit');
+  assert.equal(store.poll(dir, 'new').next_task, '__POLL__');
+  assert.equal(store.taskStatus(dir, 'a').state, 'running', 'a live turn keeps its claim until it acknowledges the stop');
+  assert.equal(store.poll(dir, 'old', { task_id: 'a', response_text: 'done' }).has_next, false);
+  assert.equal(store.taskStatus(dir, 'a').response, 'done');
+  assert.equal(store.poll(dir, 'new').task_id, 'b');
+}));

@@ -1,8 +1,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const store = require('../lib/task-store.cjs');
 const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
 test('all inline page scripts parse', () => {
   for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) new vm.Script(match[1]);
@@ -75,4 +77,28 @@ test('session names cannot break out of inline handlers and rendered markdown is
     window.DOMPurify = undefined;
     assert.equal(renderMarkdown('<b>'), '<pre>&lt;b&gt;</pre>');
   `, { assert });
+});
+test('recorded multi-paragraph tasks stay in the user bubble; unmarked legacy sections are still split', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), '6pro-render-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'meta.json'), '{"id":"render"}');
+    store.enqueue(dir, '请修复下面的函数：\n\n```python\ndef f():\n    return 1\n```', 'a');
+    store.poll(dir, 'worker');
+    store.poll(dir, 'worker', { task_id: 'a', response_text: '已修复' });
+    const recorded = store.read(path.join(dir, 'RESPONSE.md'));
+    const legacy = '### 用户任务 [12:00:00]\n短问题\n\n这是旧版本模型直接写进同一段的较长回复内容。';
+    const start = html.indexOf('    function renderMarkdown(markdown) {');
+    const end = html.indexOf('    function fallbackCopyText', start);
+    vm.runInNewContext(`
+      const marked = { parse: text => '<md>' + text + '</md>' };
+      const window = { DOMPurify: { sanitize: value => value } };
+      const DOMPurify = window.DOMPurify;
+      ${html.slice(start, end)}
+      const block = (out, text) => out.split('<md>').find(part => part.includes(text)).split('</md>')[0];
+      assert.match(block(renderCodexContent(recorded), '请修复下面的函数'), /def f\(\)/);
+      assert.doesNotMatch(block(renderCodexContent(legacy), '短问题'), /较长回复/);
+    `, { assert, recorded, legacy });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
