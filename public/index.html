@@ -1369,6 +1369,8 @@
         `3. 成果直接落盘：完成任务时使用 codex_fetch_next_task 的 task_id 和 response_text 提交成果，由服务端追加到绑定会话的 RESPONSE.md。\n` +
         `4. 持续协同监听：只要 has_next 为 true，在完成当前阶段任务并落盘后，请继续调用 codex_fetch_next_task 接收下一条指令。\n` +
         `5. 退出通道：当 codex_fetch_next_task 返回 has_next=false（用户输入 /exit）时，输出最终总结并结束本轮。\n` +
+        `6. 任务内容就在 codex_fetch_next_task 的返回值里，直接按它执行。提交结果的调用失败或被拦截时，原样重试同一个调用；不要为了研究队列实现去读取会话目录文件或搜索源码。\n` +
+        `7. 任务里写“只回复/只输出某内容”时，指的是 response_text 的内容：照样用 codex_fetch_next_task 提交并继续领取下一条，不要直接用它结束本轮。\n` +
         `现在请调用 codex_fetch_next_task(session_id="${activeSessionId}", step_summary="Idle") 获取首个任务或进入待命状态。`;
     }
 

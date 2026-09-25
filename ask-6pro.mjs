@@ -5,9 +5,10 @@
  */
 
 import http from "node:http";
-import { closeSync, openSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { spawn } from "node:child_process";
+import { appendFileSync, closeSync, openSync, readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
+import { execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const BASE_URL = process.env.SIXPRO_SERVER_URL || "http://127.0.0.1:17888";
 // Each spawn/resume starts one ChatGPT turn; Pro quota is scarce, so it is never the default.
@@ -91,6 +92,11 @@ async function cmdStatus(sessionId = "") {
   if (status.lastActive) {
     console.log(`最近活跃时间: ${status.lastActive}`);
   }
+  const workers = workersOf(activeSess);
+  console.log(`后台执行进程: ${workers.length ? workers.map(worker => `PID ${worker.pid}（启动于 ${worker.started}）`).join("，") : "未运行"}`);
+  if (status.state === "unknown" && workers.length) {
+    console.log("说明: 心跳暂停但执行进程仍在，模型多半在长时间思考或执行长命令（Pro 常见），不要急着 kill。");
+  }
   console.log(`===========================\n`);
 }
 
@@ -119,6 +125,7 @@ async function waitForAnswer(sId, taskId, timeoutSec = 300, sessionDir = "") {
   const startedAt = Date.now();
   let lastState = "";
   let warnedIdle = false;
+  let notedSilent = false;
   while (Date.now() - startedAt < timeoutSec * 1000) {
     try {
       const info = await getInfo(sId, sessionDir, taskId);
@@ -137,6 +144,14 @@ async function waitForAnswer(sId, taskId, timeoutSec = 300, sessionDir = "") {
       if (!warnedIdle && task.state === "queued" && ["offline", "unknown"].includes(info.agentStatus?.state)) {
         warnedIdle = true;
         console.log(`⚠️ 会话 ${sId} 当前没有在线执行端（${info.agentStatus.label}），任务会一直排队；可用 resume --session ${sId} 拉起新的执行 turn。`);
+      }
+      // The heartbeat pauses while the model thinks or runs a long command (Pro can think for many
+      // minutes); only a missing Codex process means the turn really ended.
+      if (!notedSilent && task.state === "running" && info.agentStatus?.state === "unknown") {
+        notedSilent = true;
+        console.log(workersOf(sId).length
+          ? `ℹ️ 心跳暂停，但会话 ${sId} 的 Codex 进程仍在运行：模型可能在长时间思考或执行长命令（Pro 常见），继续等待。`
+          : `⚠️ 会话 ${sId} 心跳已过期，且找不到它的 Codex 进程，执行回合可能已中断；可在控制台重置执行端后 resume。`);
       }
     } catch (error) {
       if (error.terminal || (error.status >= 400 && error.status < 500)) throw error;
@@ -186,28 +201,51 @@ function buildLaunchPrompt(sessionName, sessionId) {
 3. 成果直接落盘：完成任务时通过 codex_fetch_next_task 的 task_id（领取时返回的原值）和 response_text 参数提交成果，由服务端追加到绑定会话的 RESPONSE.md，不要自行选择回复路径。
 4. 持续协同监听：只要 has_next 为 true，在完成当前阶段任务并落盘后，请继续调用 codex_fetch_next_task 接收下一条指令。
 5. 退出通道：当 codex_fetch_next_task 返回 has_next=false（用户输入 /exit）时，输出最终总结并结束本轮。
+6. 任务内容就在 codex_fetch_next_task 的返回值里，直接按它执行。提交结果的调用失败或被拦截时，原样重试同一个调用；不要为了研究队列实现去读取会话目录文件或搜索源码。
+7. 任务里写“只回复/只输出某内容”时，指的是 response_text 的内容：照样用 codex_fetch_next_task 提交并继续领取下一条，不要直接用它结束本轮。
 现在请调用 codex_fetch_next_task(session_id="${sessionId}", step_summary="Idle") 获取首个任务或进入待命状态。`;
+}
+
+// Runs detached from the CLI and owns one Codex turn. Having no console itself, it starts Codex with a
+// new hidden console that the native codex.exe and its commands share. Starting codex.js detached
+// instead leaves it without a console, and codex.exe then opens a visible terminal window.
+async function superviseWorker(sessionDir, model) {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const codexBin = process.env.CODEX_BIN || "D:\\tools\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js";
+  const logPath = join(sessionDir, "codex-cli.log");
+  const logFd = openSync(logPath, "a");
+  let worker;
+  try {
+    worker = spawn(process.execPath, [codexBin, "exec", "--cd", sessionDir, "--model", model, "--skip-git-repo-check", "-"], {
+      cwd: sessionDir,
+      stdio: ["pipe", logFd, logFd],
+      windowsHide: true,
+    });
+  } finally {
+    closeSync(logFd);
+  }
+  worker.stdin.on("error", () => {});
+  worker.stdin.end(Buffer.concat(chunks));
+  const code = await new Promise(resolve => {
+    worker.on("error", error => { appendFileSync(logPath, `\n启动 Codex CLI 失败: ${error.message}\n`); resolve(1); });
+    worker.on("exit", exitCode => resolve(exitCode ?? 1));
+  });
+  process.exit(code);
 }
 
 // Start one Codex turn bound to the session directory and wait for its first heartbeat there.
 async function launchWorker({ sessionId, sessionName, sessionDir, timeoutSec, model }) {
   const launchPrompt = buildLaunchPrompt(sessionName, sessionId);
-  console.log(`🚀 正在通过无头模式拉起 Codex CLI (${model})...`);
-  const codexBin = process.env.CODEX_BIN || "D:\\tools\\nodejs\\node_modules\\@openai\\codex\\bin\\codex.js";
+  console.log(`🚀 正在后台拉起 Codex CLI (${model})...`);
   const logPath = join(sessionDir, "codex-cli.log");
-  const logFd = openSync(logPath, "a");
   const startedAt = Date.now();
-  let cp;
-  try {
-    cp = spawn(process.execPath, [codexBin, "exec", "--cd", sessionDir, "--model", model, "--skip-git-repo-check", "-"], {
-      cwd: sessionDir,
-      stdio: ["pipe", logFd, logFd],
-      windowsHide: true,
-      detached: true,
-    });
-  } finally {
-    closeSync(logFd);
-  }
+  const cp = spawn(process.execPath, [fileURLToPath(import.meta.url), "__supervise", sessionDir, model], {
+    cwd: sessionDir,
+    stdio: ["pipe", "ignore", "ignore"],
+    windowsHide: true,
+    detached: true,
+  });
   let launchError;
   cp.on("error", err => { launchError = err; });
   cp.stdin.on("error", err => { launchError = err; });
@@ -328,6 +366,52 @@ async function cmdWatch(sessionArg, timeoutSec) {
   console.log(`[${clock()}] 监控结束（${timeoutSec} 秒）。`);
 }
 
+// Workers are the hidden supervisors started by launchWorker, or codex.js processes that older versions
+// started directly; a worker's own child processes are folded into it.
+function listWorkers() {
+  const script = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-CimInstance Win32_Process -Filter \"Name = 'node.exe'\" | "
+    + "ForEach-Object { [pscustomobject]@{ pid = $_.ProcessId; parent = $_.ParentProcessId; started = $_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss'); command = $_.CommandLine } } | ConvertTo-Json -Compress";
+  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true }).trim();
+  const workers = [];
+  for (const proc of output ? [].concat(JSON.parse(output)) : []) {
+    const args = [...(proc.command || "").matchAll(/"([^"]*)"|(\S+)/g)].map(match => match[1] ?? match[2]);
+    const supervised = args.indexOf("__supervise");
+    const direct = args.findIndex((arg, index) => /codex\.js$/i.test(arg) && args[index + 1] === "exec");
+    const cd = args.indexOf("--cd");
+    const dir = supervised >= 0 ? args[supervised + 1] : direct >= 0 && cd > direct ? args[cd + 1] : undefined;
+    if (dir && basename(dirname(dir)).toLowerCase() === "sessions") workers.push({ ...proc, sessionId: basename(dir) });
+  }
+  const pids = new Set(workers.map(worker => worker.pid));
+  return workers.filter(worker => !pids.has(worker.parent));
+}
+
+function workersOf(sessionId) {
+  try { return listWorkers().filter(worker => worker.sessionId === sessionId); }
+  catch { return []; }
+}
+
+function cmdWorkers() {
+  const workers = listWorkers();
+  if (!workers.length) console.log("当前没有运行中的 Codex 执行进程。");
+  for (const worker of workers) console.log(`${worker.sessionId}\tPID ${worker.pid}\t启动于 ${worker.started}`);
+}
+
+// Killing the local process tree also ends the ChatGPT turn: the gateway ends it once Codex disconnects.
+function cmdKill(sessionArg) {
+  if (!sessionArg) throw new Error("kill 需要 --session <sessionId>（多个用逗号分隔）；可先用 workers 查看正在运行的进程");
+  const ids = new Set(sessionArg.split(",").map(id => id.trim()).filter(Boolean));
+  const targets = listWorkers().filter(worker => ids.has(worker.sessionId));
+  if (!targets.length) {
+    console.log(`没有找到会话 ${[...ids].join(", ")} 的 Codex 执行进程。`);
+    return;
+  }
+  for (const worker of targets) {
+    execFileSync("taskkill.exe", ["/PID", String(worker.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    console.log(`✅ 已强制结束会话 ${worker.sessionId} 的 Codex 进程（PID ${worker.pid}），ChatGPT 端这一轮也随之结束。`);
+  }
+  console.log("会话会在 45 秒内显示为离线。若当时有正在处理的任务，它会显示为「状态待确认」：可在控制台点「重置执行端」把任务退回队首，再用 resume 重新拉起。");
+}
+
 async function cmdStop(sessionId) {
   if (!sessionId) throw new Error("stop 需要 --session <sessionId>");
   const res = await sendTask("/exit", sessionId);
@@ -390,8 +474,17 @@ async function main() {
       case "stop":
         await cmdStop(sessionArg);
         break;
+      case "workers":
+        cmdWorkers();
+        break;
+      case "kill":
+        cmdKill(sessionArg);
+        break;
       case "history":
         await cmdHistory(sessionArg);
+        break;
+      case "__supervise": // Internal: started by launchWorker, see superviseWorker.
+        await superviseWorker(rest[0], rest[1]);
         break;
       default:
         console.log(`用法:
@@ -403,7 +496,9 @@ async function main() {
   ask-6pro ask "<问题>" --session <id>        # 发送并等待这条消息的回复
   ask-6pro wait --task <taskId> --session <id> # 等待某个任务的回复
   ask-6pro watch --session <id>[,<id>...]    # 持续监控一个或多个会话的新回复与状态变化
-  ask-6pro stop --session <id>               # 请求结束会话当前的执行 turn
+  ask-6pro stop --session <id>               # 请求结束会话当前的执行 turn（推荐，模型确认后进程自行退出）
+  ask-6pro workers                           # 列出正在后台运行的 Codex 执行进程
+  ask-6pro kill --session <id>[,<id>...]     # 强制结束会话的 Codex 进程（卡住时使用）
   ask-6pro history [--session <id>]          # 查看会话完整历史回复
 
 选项:
