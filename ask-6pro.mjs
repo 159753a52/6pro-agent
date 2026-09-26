@@ -23,6 +23,9 @@ const GATEWAY_PROVIDER_ARGS = [
   'model_providers.sixpro_gateway.wire_api="responses"',
   "model_providers.sixpro_gateway.requires_openai_auth=true",
 ].flatMap(override => ["-c", override]);
+// All sessions share one tunnel, which forwards one MCP call at a time and breaks once a queued call
+// misses its two-minute deadline. Two live turns stay well inside that deadline.
+const MAX_LIVE_WORKERS = Number.parseInt(process.env.SIXPRO_MAX_WORKERS ?? "", 10) || 2;
 
 function request(method, path, body = null) {
   return new Promise((resolve, reject) => {
@@ -285,12 +288,14 @@ async function cmdResume(sessionId, timeoutSec, model) {
     // A new turn would only wait for the old one here; that cannot be confirmed by a heartbeat.
     throw new Error(`会话 ${sessionId} 状态为「${status.label}」：旧 turn 仍持有任务或尚未确认停止。确认旧 turn 已中断后，先在控制台重置执行端，或用 stop 停止后再 resume。`);
   }
+  assertWorkerCapacity();
   const session = (info.sessions || []).find(s => s.id === sessionId);
   await launchWorker({ sessionId, sessionName: session?.name || sessionId, sessionDir: join(info.workspace, "sessions", sessionId), timeoutSec, model });
 }
 
 async function cmdSpawn(sessionName = "", initialTask = "", timeoutSec = 300, model = DEFAULT_MODEL) {
   const finalName = (sessionName && sessionName.trim()) ? sessionName.trim() : `新会话_${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+  assertWorkerCapacity(); // Before creating the session, so a refused spawn leaves no empty session behind.
 
   // 1. 创建新会话
   const createRes = await request("POST", "/api/sessions/create", { name: finalName });
@@ -393,6 +398,13 @@ function listWorkers() {
   }
   const pids = new Set(workers.map(worker => worker.pid));
   return workers.filter(worker => !pids.has(worker.parent));
+}
+
+function assertWorkerCapacity() {
+  const workers = listWorkers();
+  if (workers.length < MAX_LIVE_WORKERS) return;
+  throw new Error(`已有 ${workers.length} 个会话在运行（${workers.map(worker => worker.sessionId).join("、")}），同时最多 ${MAX_LIVE_WORKERS} 个：`
+    + "所有会话共用一个 tunnel，再多容易把它堵坏。等其中一个结束，或用 stop --session <id> 停掉一个后再试。");
 }
 
 function workersOf(sessionId) {

@@ -3,15 +3,18 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { fork, execFile } = require('node:child_process');
+const { fork, execFile, spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { promisify } = require('node:util');
 const store = require('../lib/task-store.cjs');
 const exec = promisify(execFile);
 
 // Runs the real server against a temporary workspace; `cli` passes extra environment to the CLI.
+// CODEX_BIN defaults to a stub that exits at once: a real Codex worker would open a paid ChatGPT turn.
 async function withServer(action) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), '6pro-cli-'));
+  const noCodex = path.join(root, 'no-codex.cjs');
+  fs.writeFileSync(noCodex, '');
   const fixture = path.join(root, 'server.cjs');
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
     .replace('const PORT = 17888;', 'const PORT = 0;')
@@ -23,7 +26,7 @@ async function withServer(action) {
   try {
     const [{ port }] = await once(child, 'message', { signal: AbortSignal.timeout(5000) });
     const cli = (args, env = {}) => exec(process.execPath, [path.join(__dirname, '..', 'ask-6pro.mjs'), ...args],
-      { env: { ...process.env, ...env, SIXPRO_SERVER_URL: `http://127.0.0.1:${port}` }, windowsHide: true, timeout: 15000 });
+      { env: { ...process.env, CODEX_BIN: noCodex, ...env, SIXPRO_SERVER_URL: `http://127.0.0.1:${port}` }, windowsHide: true, timeout: 15000 });
     await action({ root, port, cli });
   } finally {
     const exited = once(child, 'exit'); child.kill(); await exited;
@@ -78,4 +81,20 @@ test('spawn routes the Codex worker to the local gateway instead of the global C
       assert.equal(args[args.indexOf(override) - 1], '-c', override);
     }
     assert.equal(args.at(-1), '-');
+  }));
+
+test('spawn refuses another turn at the live-worker limit, before creating a session', { timeout: 30000 }, () =>
+  withServer(async ({ root, cli }) => {
+    // listWorkers() recognises a worker by its `__supervise <workspace>/sessions/<id>` arguments.
+    const busy = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '__supervise', path.join(root, 'sessions', 'busy')],
+      { stdio: 'ignore', windowsHide: true });
+    const sessions = () => fs.readdirSync(path.join(root, 'sessions')).sort();
+    try {
+      const before = sessions();
+      await assert.rejects(cli(['spawn', '第二个会话', '--timeout', '5'], { SIXPRO_MAX_WORKERS: '1' }),
+        error => /已有 \d+ 个会话在运行（[^）]*busy/.test(error.stdout + error.stderr));
+      assert.deepEqual(sessions(), before);
+    } finally {
+      busy.kill();
+    }
   }));
