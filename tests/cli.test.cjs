@@ -83,6 +83,24 @@ test('spawn routes the Codex worker to the local gateway instead of the global C
     assert.equal(args.at(-1), '-');
   }));
 
+test('kill also requests a stop, so a ChatGPT turn still polling the queue ends at its next poll', { timeout: 30000 }, () =>
+  withServer(async ({ root, port, cli }) => {
+    await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'orphan' }),
+    });
+    const dir = path.join(root, 'sessions', 'orphan');
+    assert.equal(store.poll(dir, 'turn').next_task, '__POLL__'); // The ChatGPT turn is live and idle.
+    const worker = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', '__supervise', dir], { stdio: 'ignore', windowsHide: true });
+    const exited = once(worker, 'exit');
+    try {
+      assert.match((await cli(['kill', '--session', 'orphan'])).stdout, /已强制结束会话 orphan .*下次领取任务时确认停止/);
+      await exited;
+      assert.equal(store.poll(dir, 'turn').has_next, false);
+    } finally {
+      worker.kill();
+    }
+  }));
+
 test('spawn refuses another turn at the live-worker limit, before creating a session', { timeout: 30000 }, () =>
   withServer(async ({ root, cli }) => {
     // listWorkers() recognises a worker by its `__supervise <workspace>/sessions/<id>` arguments.

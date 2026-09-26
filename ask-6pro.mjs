@@ -419,7 +419,9 @@ function cmdWorkers() {
 }
 
 // Killing the local process tree also ends the ChatGPT turn: the gateway ends it once Codex disconnects.
-function cmdKill(sessionArg) {
+// Killing Codex alone does not end the ChatGPT response: a turn that is polling the queue never writes
+// to Codex, so the gateway does not notice the disconnect. A stop request ends it at its next poll.
+async function cmdKill(sessionArg) {
   if (!sessionArg) throw new Error("kill 需要 --session <sessionId>（多个用逗号分隔）；可先用 workers 查看正在运行的进程");
   const ids = new Set(sessionArg.split(",").map(id => id.trim()).filter(Boolean));
   const targets = listWorkers().filter(worker => ids.has(worker.sessionId));
@@ -428,10 +430,13 @@ function cmdKill(sessionArg) {
     return;
   }
   for (const worker of targets) {
+    let stopNote = "ChatGPT 端的回答会在下次领取任务时确认停止并结束";
+    try { await sendTask("/exit", worker.sessionId); }
+    catch (error) { stopNote = `停止请求没有发出（${error.message}），ChatGPT 端的回答可能继续运行`; }
     execFileSync("taskkill.exe", ["/PID", String(worker.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    console.log(`✅ 已强制结束会话 ${worker.sessionId} 的 Codex 进程（PID ${worker.pid}），ChatGPT 端这一轮也随之结束。`);
+    console.log(`✅ 已强制结束会话 ${worker.sessionId} 的 Codex 进程（PID ${worker.pid}）；${stopNote}。`);
   }
-  console.log("会话会在 45 秒内显示为离线。若当时有正在处理的任务，它会显示为「状态待确认」：可在控制台点「重置执行端」把任务退回队首，再用 resume 重新拉起。");
+  console.log("若 ChatGPT 端的回答已经卡死、不再领取任务，会话会停在「停止中」或「状态待确认」：可在控制台点「重置执行端」把未完成的任务退回队首，再用 resume 重新拉起。");
 }
 
 async function cmdStop(sessionId) {
@@ -500,7 +505,7 @@ async function main() {
         cmdWorkers();
         break;
       case "kill":
-        cmdKill(sessionArg);
+        await cmdKill(sessionArg);
         break;
       case "history":
         await cmdHistory(sessionArg);
