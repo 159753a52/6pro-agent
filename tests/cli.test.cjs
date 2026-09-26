@@ -9,7 +9,8 @@ const { promisify } = require('node:util');
 const store = require('../lib/task-store.cjs');
 const exec = promisify(execFile);
 
-test('CLI sends to an explicit session, waits for that task, watches new replies and stops the turn', { timeout: 30000 }, async () => {
+// Runs the real server against a temporary workspace; `cli` passes extra environment to the CLI.
+async function withServer(action) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), '6pro-cli-'));
   const fixture = path.join(root, 'server.cjs');
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
@@ -21,8 +22,18 @@ test('CLI sends to an explicit session, waits for that task, watches new replies
   const child = fork(fixture, [], { cwd: root, stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true });
   try {
     const [{ port }] = await once(child, 'message', { signal: AbortSignal.timeout(5000) });
-    const cli = (...args) => exec(process.execPath, [path.join(__dirname, '..', 'ask-6pro.mjs'), ...args],
-      { env: { ...process.env, SIXPRO_SERVER_URL: `http://127.0.0.1:${port}` }, windowsHide: true, timeout: 15000 });
+    const cli = (args, env = {}) => exec(process.execPath, [path.join(__dirname, '..', 'ask-6pro.mjs'), ...args],
+      { env: { ...process.env, ...env, SIXPRO_SERVER_URL: `http://127.0.0.1:${port}` }, windowsHide: true, timeout: 15000 });
+    await action({ root, port, cli });
+  } finally {
+    const exited = once(child, 'exit'); child.kill(); await exited;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('CLI sends to an explicit session, waits for that task, watches new replies and stops the turn', { timeout: 30000 }, () =>
+  withServer(async ({ root, port, cli: run }) => {
+    const cli = (...args) => run(args);
     const create = id => fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
     });
@@ -53,8 +64,18 @@ test('CLI sends to an explicit session, waits for that task, watches new replies
     assert.match((await cli('stop', '--session', 'cli_a')).stdout, /已请求停止会话 cli_a/);
     assert.equal(store.poll(dir, 'worker').has_next, false);
     await assert.rejects(cli('resume'), /resume 需要 --session/);
-  } finally {
-    const exited = once(child, 'exit'); child.kill(); await exited;
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+  }));
+
+test('spawn routes the Codex worker to the local gateway instead of the global Codex provider', { timeout: 30000 }, () =>
+  withServer(async ({ root, cli }) => {
+    const argsFile = path.join(root, 'codex-args.json');
+    const fakeCodex = path.join(root, 'fake-codex.cjs');
+    fs.writeFileSync(fakeCodex, `require('node:fs').writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(2)));`);
+    await assert.rejects(cli(['spawn', '网关路由', '--timeout', '10'], { CODEX_BIN: fakeCodex }),
+      error => /Codex CLI 已退出 \(0\)/.test(error.stdout + error.stderr));
+    const args = JSON.parse(fs.readFileSync(argsFile, 'utf8'));
+    for (const override of ['model_provider="sixpro_gateway"', 'model_providers.sixpro_gateway.base_url="http://127.0.0.1:17841/v1"']) {
+      assert.equal(args[args.indexOf(override) - 1], '-c', override);
+    }
+    assert.equal(args.at(-1), '-');
+  }));

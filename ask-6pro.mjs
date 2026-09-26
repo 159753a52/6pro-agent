@@ -13,6 +13,16 @@ import { fileURLToPath } from "node:url";
 const BASE_URL = process.env.SIXPRO_SERVER_URL || "http://127.0.0.1:17888";
 // Each spawn/resume starts one ChatGPT turn; Pro quota is scarce, so it is never the default.
 const DEFAULT_MODEL = "chatgpt-web/high";
+// Workers define their own route to the local gateway. ~/.codex/config.toml is rewritten by CC Switch
+// and the Codex app; once its gateway route is gone, chatgpt-web models go to the official backend,
+// which rejects them. The gateway forwards the official model catalog using the Codex login.
+const GATEWAY_PROVIDER_ARGS = [
+  'model_provider="sixpro_gateway"',
+  'model_providers.sixpro_gateway.name="OpenAI"',
+  'model_providers.sixpro_gateway.base_url="http://127.0.0.1:17841/v1"',
+  'model_providers.sixpro_gateway.wire_api="responses"',
+  "model_providers.sixpro_gateway.requires_openai_auth=true",
+].flatMap(override => ["-c", override]);
 
 function request(method, path, body = null) {
   return new Promise((resolve, reject) => {
@@ -217,7 +227,7 @@ async function superviseWorker(sessionDir, model) {
   const logFd = openSync(logPath, "a");
   let worker;
   try {
-    worker = spawn(process.execPath, [codexBin, "exec", "--cd", sessionDir, "--model", model, "--skip-git-repo-check", "-"], {
+    worker = spawn(process.execPath, [codexBin, "exec", "--cd", sessionDir, "--model", model, "--skip-git-repo-check", ...GATEWAY_PROVIDER_ARGS, "-"], {
       cwd: sessionDir,
       stdio: ["pipe", logFd, logFd],
       windowsHide: true,
